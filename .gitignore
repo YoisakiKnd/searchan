@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+*.env
+*.pem
+*.key
+.DS_Store
+/searchan
+/bin/
+/coverage.out
+/data/
+/artifacts/*
+!/artifacts/demo/
+*.prof
+*.test
+/backups/
+/dist/

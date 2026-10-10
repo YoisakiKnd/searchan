@@ -1,0 +1,12 @@
+{$SEARCHAN_DOMAIN} {
+	@telegram {
+		method POST
+		path /webhooks/telegram
+	}
+	handle @telegram {
+		reverse_proxy searchan:8090
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

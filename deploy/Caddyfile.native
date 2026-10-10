@@ -1,0 +1,13 @@
+# Replace the hostname; only the Telegram callback is public.
+bot.example.org {
+	@telegram {
+		method POST
+		path /webhooks/telegram
+	}
+	handle @telegram {
+		reverse_proxy 127.0.0.1:8090
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

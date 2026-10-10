@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+backups
+dist
+!.env.example
+bin
+data
+artifacts
+coverage.out
+*.prof
+*.test

@@ -1,0 +1,38 @@
+[Unit]
+Description=Searchan Telegram search bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=searchan
+Group=searchan
+WorkingDirectory=/var/lib/searchan
+EnvironmentFile=/etc/searchan.env
+Environment=SEARCHAN_DATA_DIR=/var/lib/searchan
+Environment=GOMEMLIMIT=96MiB
+Environment=PATH=/opt/searchan/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/opt/searchan/bin/searchan doctor -strict
+ExecStart=/opt/searchan/bin/searchan serve
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+UMask=0077
+StateDirectory=searchan
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/searchan
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LimitNOFILE=4096
+MemoryMax=384M
+TasksMax=96
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

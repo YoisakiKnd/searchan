@@ -1,0 +1,289 @@
+package research
+
+import (
+	"fmt"
+	"math"
+	"math/bits"
+	"sort"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"searchan/reader"
+	"searchan/search"
+)
+
+type passage struct {
+	text        string
+	first, last int
+}
+
+// Merge short adjacent paragraphs instead of dropping short facts/headings.
+// All output remains a contiguous slice of the original document.
+func splitPassages(text string) []passage {
+	var out []passage
+	paragraph, first, start := 1, 1, 0
+	for start < len(text) {
+		end := start + min(1800, len(text)-start)
+		for end < len(text) && !utf8.RuneStart(text[end]) {
+			end--
+		}
+		if end < len(text) {
+			window := text[start:end]
+			if cut := strings.LastIndex(window, "\n\n"); cut >= 400 {
+				end = start + cut + 2
+			} else {
+				// Prefer sentence or word boundaries, retaining every byte in the tail.
+				for i := end - 1; i >= start+900; i-- {
+					if text[i] == ' ' || text[i] == '\n' || text[i] == '.' || text[i] == ';' {
+						end = i + 1
+						break
+					}
+				}
+			}
+		}
+		part := text[start:end]
+		breaks := strings.Count(part, "\n\n")
+		last := paragraph + breaks
+		if strings.HasSuffix(part, "\n\n") {
+			last--
+		}
+		paragraph += breaks
+		if body := strings.TrimSpace(part); body != "" {
+			out = append(out, passage{body, first, max(first, last)})
+		}
+		start = end
+		first = paragraph
+	}
+	return out
+}
+
+// Fixed-size bottom-k shingle sketches avoid retaining a word set per passage.
+type sketch struct {
+	values          [16]uint64
+	n               int
+	exact, critical uint64
+}
+
+func hashTerm(s string) uint64 {
+	h := uint64(14695981039346656037)
+	for i := range len(s) {
+		h ^= uint64(s[i])
+		h *= 1099511628211
+	}
+	return h
+}
+func makeSketch(text string) sketch {
+	s := sketch{exact: hashTerm(text)}
+	var previous, older uint64
+	count := 0
+	scanTokens(text, func(term string) {
+		h := hashTerm(term)
+		critical := false
+		for _, r := range term {
+			if unicode.IsDigit(r) {
+				critical = true
+				break
+			}
+		}
+		switch term {
+		case "not", "no", "never", "cannot", "without", "can", "may", "must", "only", "except", "before", "after", "unless", "if", "t", "禁止", "不能", "不", "未", "无", "至少", "最多", "仅", "只", "必须", "可能", "如果", "除非":
+			critical = true
+		}
+		if critical {
+			s.critical = (s.critical ^ h) * 1099511628211
+		}
+		if count >= 2 {
+			value := h ^ bits.RotateLeft64(previous, 21) ^ bits.RotateLeft64(older, 42)
+			i := sort.Search(s.n, func(i int) bool { return s.values[i] >= value })
+			if i < s.n && s.values[i] == value {
+			} else if i < len(s.values) {
+				if s.n < len(s.values) {
+					s.n++
+				}
+				copy(s.values[i+1:s.n], s.values[i:s.n-1])
+				s.values[i] = value
+			}
+		}
+		older, previous = previous, h
+		count++
+	}, false)
+	return s
+}
+func similarity(a, b sketch) float64 {
+	if a.critical != b.critical {
+		return 0
+	} // Preserve numerical/negated variants.
+	if a.exact == b.exact {
+		return 1
+	}
+	if a.n == 0 || b.n == 0 {
+		return 0
+	}
+	matched, i, j := 0, 0, 0
+	for i < a.n && j < b.n {
+		if a.values[i] == b.values[j] {
+			matched++
+			i++
+			j++
+		} else if a.values[i] < b.values[j] {
+			i++
+		} else {
+			j++
+		}
+	}
+	return float64(matched) / float64(a.n+b.n-matched)
+}
+
+type scoredEvidence struct {
+	evidence Evidence
+	vector   lexicalVector
+	score    float64
+	sketch   sketch
+	domain   string
+}
+
+func SelectEvidence(query string, docs []reader.Document, published map[string]string, max int) []Evidence {
+	return SelectEvidenceForPlan(Plan{Queries: []string{query}}, docs, published, max)
+}
+
+// SelectEvidenceForPlan combines corpus BM25, aspect novelty, source diversity,
+// and a small MMR-style redundancy penalty. Lexical matches are not fact checks.
+func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[string]string, limit int) []Evidence {
+	if limit <= 0 || len(docs) == 0 {
+		return nil
+	}
+	limit = min(24, limit)
+	query := ""
+	if len(plan.Queries) > 0 {
+		query = plan.Queries[0]
+	}
+	query += " " + strings.Join(plan.focus, " ")
+	l := newLexical(query, plan.Aspects, plan.Queries)
+	scratch := make([]uint16, len(l.terms))
+	items := make([]scoredEvidence, 0, len(docs)*16)
+	vectors := make([]lexicalVector, 0, len(docs)*16)
+	hashes := map[string]bool{}
+	urls := map[string]bool{}
+	for _, doc := range docs {
+		key := search.DocumentURL(doc.URL)
+		if key == "" || urls[key] || (doc.Hash != "" && hashes[doc.Hash]) {
+			continue
+		}
+		urls[key] = true
+		if doc.Hash != "" {
+			hashes[doc.Hash] = true
+		}
+		titleVector := l.vector(doc.Title, scratch)
+		titleBoost := 0.0
+		for _, f := range titleVector.matches {
+			titleBoost += l.terms[f.term].weight * .12
+		}
+		for _, p := range splitPassages(reader.Clip(doc.Text, reader.MaxText)) {
+			v := l.vector(p.text, scratch)
+			items = append(items, scoredEvidence{evidence: Evidence{URL: doc.URL, Title: doc.Title, Text: p.text, DocumentHash: doc.Hash, Paragraph: p.first, ParagraphEnd: p.last, Kind: "body", PublishedAt: published[doc.URL], FetchedAt: doc.FetchedAt}, vector: v, score: titleBoost, domain: domain(doc.URL)})
+			vectors = append(vectors, v)
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	scores := l.scores(vectors)
+	bestBody := 0.0
+	for i := range items {
+		items[i].score += scores[i]
+		bestBody = math.Max(bestBody, scores[i])
+	}
+	// Do not fill diversity slots with unrelated text merely because its domain differs.
+	if bestBody > 0 {
+		filtered := items[:0]
+		for i, item := range items {
+			if scores[i] >= .04*bestBody {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	} else if len(l.terms) > 0 {
+		// A fetched unrelated page is not usable evidence merely because the
+		// fetch succeeded. Keep title matches (e.g. a terse answer without query
+		// words), otherwise let gathering recover or return search leads.
+		filtered := items[:0]
+		for _, item := range items {
+			if item.score > 0 {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].score > items[j].score })
+	// Bound the expensive diversity pass, reserving room per document first.
+	pool := make([]scoredEvidence, 0, min(96, len(items)))
+	perDoc := map[string]int{}
+	for _, item := range items {
+		if perDoc[item.evidence.URL] >= 8 {
+			continue
+		}
+		perDoc[item.evidence.URL]++
+		item.sketch = makeSketch(item.evidence.Text)
+		pool = append(pool, item)
+		if len(pool) >= 96 {
+			break
+		}
+	}
+	if len(pool) == 0 {
+		return nil
+	}
+	peak := math.Max(pool[0].score, 1e-9)
+	used := make([]bool, len(pool))
+	perURL := map[string]int{}
+	perDomain := map[string]int{}
+	selected := make([]int, 0, limit)
+	covered := uint8(0)
+	for len(selected) < limit {
+		best, utility := -1, math.Inf(-1)
+		for i, item := range pool {
+			if used[i] || perURL[item.evidence.URL] >= 3 {
+				continue
+			}
+			redundancy := 0.0
+			exactDuplicate := false
+			for _, j := range selected {
+				if item.sketch.exact == pool[j].sketch.exact {
+					exactDuplicate = true
+					break
+				}
+				redundancy = math.Max(redundancy, similarity(item.sketch, pool[j].sketch))
+			}
+			if exactDuplicate {
+				continue
+			}
+			novel := bits.OnesCount8(item.vector.mask &^ covered)
+			score := item.score/peak + .3*float64(novel) - .45*redundancy - .07*float64(perDomain[item.domain]) - .12*float64(perURL[item.evidence.URL])
+			if score > utility {
+				best, utility = i, score
+			}
+		}
+		if best < 0 {
+			break
+		}
+		used[best] = true
+		selected = append(selected, best)
+		item := pool[best]
+		covered |= item.vector.mask
+		perURL[item.evidence.URL]++
+		perDomain[item.domain]++
+	}
+	out := make([]Evidence, 0, len(selected))
+	for _, i := range selected {
+		ev := pool[i].evidence
+		ev.ID = fmt.Sprintf("e%d", len(out)+1)
+		ev.RelevanceScore = pool[i].score
+		for aspect := range min(4, len(plan.Aspects)) {
+			if pool[i].vector.mask&(1<<aspect) != 0 {
+				ev.MatchedAspects = append(ev.MatchedAspects, aspect)
+			}
+		}
+		out = append(out, ev)
+	}
+	return out
+}

@@ -1,0 +1,82 @@
+name: check
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      docker:
+        description: Also verify optional Docker deployment
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Install Chinese fonts and verified Typst 0.15.1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          task_name=typst-x86_64-unknown-linux-musl
+          task_dir=$(mktemp -d)
+          curl --fail --location --retry 2 --max-time 60 -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/typst/typst/releases/tags/v0.15.1 -o "$task_dir/release.json"
+          task_sha=$(python3 -c 'import json,sys; a=next(a for a in json.load(open(sys.argv[1]))["assets"] if a["name"]=="typst-x86_64-unknown-linux-musl.tar.xz"); d=a["digest"]; assert d.startswith("sha256:") and len(d)==71; print(d[7:])' "$task_dir/release.json")
+          curl --fail --location --retry 2 --max-time 60 "https://github.com/typst/typst/releases/download/v0.15.1/$task_name.tar.xz" -o "$task_dir/typst.tar.xz"
+          printf '%s  %s\n' "$task_sha" "$task_dir/typst.tar.xz" | sha256sum --check --strict -
+          tar -xJf "$task_dir/typst.tar.xz" -C "$task_dir" "$task_name/typst"
+          echo "SEARCHAN_TEST_TYPST=$task_dir/$task_name/typst" >> "$GITHUB_ENV"
+          echo "TYPST_ARCHIVE=$task_dir/typst.tar.xz" >> "$GITHUB_ENV"
+          echo "TYPST_ARCHIVE_SHA=$task_sha" >> "$GITHUB_ENV"
+      - run: go test -race -cover -timeout 90s ./...
+      - run: go vet ./...
+      - run: go build -trimpath -o bin/searchan ./cmd/searchan
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - run: govulncheck ./...
+      - run: bin/searchan eval -out artifacts/evaluation.json
+      - name: Native systemd install, upgrade and rollback (local fixtures only)
+        run: |
+          cat > "$RUNNER_TEMP/searchan.env" <<'CONFIG'
+          TELEGRAM_BOT_TOKEN=ci-token
+          TELEGRAM_BOT_USERNAME=ci_bot
+          TELEGRAM_WEBHOOK_SECRET=ci_smoke_secret_01234567890123456789
+          SEARCHAN_ALLOWED_USERS=telegram:1
+          MODEL_ENDPOINT=https://model.invalid/v1/chat/completions
+          MODEL_NAME=ci-model
+          SEARCHAN_LISTEN=127.0.0.1:8090
+          CONFIG
+          chmod 600 "$RUNNER_TEMP/searchan.env"
+          sudo bash scripts/install-linux.sh --binary bin/searchan --typst-archive "$TYPST_ARCHIVE" --typst-sha256 "$TYPST_ARCHIVE_SHA" --env-file "$RUNNER_TEMP/searchan.env" --version ci-v1 --start
+          go build -trimpath -ldflags='-X main.version=ci-v2' -o bin/searchan ./cmd/searchan
+          sudo bash scripts/install-linux.sh --binary bin/searchan --typst "$SEARCHAN_TEST_TYPST" --version ci-v2
+          sudo bash scripts/install-linux.sh --rollback ci-v1 --start
+          sudo /opt/searchan/bin/searchan-admin healthcheck
+          sudo systemctl stop searchan
+      - name: Show service diagnostics on failure
+        if: failure()
+        run: sudo journalctl -u searchan -n 100 --no-pager
+      - name: Package Linux amd64 and arm64
+        run: bash scripts/package-linux.sh ci-${{ github.run_number }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundles
+          path: dist/
+  container:
+    if: github.event_name == 'workflow_dispatch' && inputs.docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --target test -t searchan:test .
+      - run: |
+          docker build -t searchan:ci .
+          docker run --rm --read-only --tmpfs /tmp -e SEARCHAN_DATA_DIR=/tmp/preflight -e TELEGRAM_BOT_TOKEN=ci-token -e TELEGRAM_WEBHOOK_SECRET=ci_smoke_secret_01234567890123456789 -e TELEGRAM_BOT_USERNAME=ci_bot -e SEARCHAN_ALLOWED_USERS=telegram:1 -e MODEL_ENDPOINT=https://model.invalid/v1/chat/completions -e MODEL_NAME=ci-model searchan:ci doctor -strict
+          cp .env.example .env
+          SEARCHAN_DOMAIN=bot.example.invalid docker compose -f compose.yaml -f compose.production.yaml config --quiet
+          docker run --rm -e SEARCHAN_DOMAIN=bot.example.invalid -v "$PWD/deploy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile

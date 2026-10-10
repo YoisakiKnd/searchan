@@ -1,0 +1,359 @@
+{
+  "version": 1,
+  "description": "Synthetic development fixtures, not a held-out web benchmark. Version statements are fictional. Source aliases represent the same annotated source group.",
+  "cases": [
+    {
+      "id": "short-facts",
+      "query": "timeout retries",
+      "aspects": [],
+      "limit": 3,
+      "documents": [
+        {
+          "url": "https://docs.example/short-facts",
+          "title": "Configuration",
+          "text": "Timeout: 8s.\n\nRetries: 0."
+        },
+        {
+          "url": "https://noise.example/short-facts",
+          "title": "News",
+          "text": "Cooking weather music travel."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://docs.example/short-facts",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "Timeout: 8s.",
+        "Retries: 0."
+      ]
+    },
+    {
+      "id": "rare-identifier",
+      "query": "Go ErrTooLarge response",
+      "aspects": [],
+      "limit": 1,
+      "documents": [
+        {
+          "url": "https://generic.example/rare-identifier",
+          "title": "Go response",
+          "text": "Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. Go response handling is useful. "
+        },
+        {
+          "url": "https://specific.example/rare-identifier",
+          "title": "ErrTooLarge reference",
+          "text": "ErrTooLarge rejects response bodies exceeding the configured byte limit."
+        },
+        {
+          "url": "https://noise.example/rare-identifier",
+          "title": "Sport",
+          "text": "A match finished today."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://specific.example/rare-identifier",
+          "grade": 3
+        },
+        {
+          "url": "https://generic.example/rare-identifier",
+          "grade": 1
+        }
+      ],
+      "required_phrases": [
+        "ErrTooLarge rejects"
+      ]
+    },
+    {
+      "id": "language-identity",
+      "query": "C++ memory ownership",
+      "aspects": [],
+      "limit": 1,
+      "documents": [
+        {
+          "url": "https://other.example/language-identity",
+          "title": "C# memory ownership",
+          "text": "C# memory ownership normally depends on managed references."
+        },
+        {
+          "url": "https://correct.example/language-identity",
+          "title": "C++ ownership",
+          "text": "C++ memory ownership can be expressed using unique_ptr and shared_ptr."
+        },
+        {
+          "url": "https://noise.example/language-identity",
+          "title": "C memory",
+          "text": "C memory uses explicit allocation and release."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://correct.example/language-identity",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "unique_ptr"
+      ]
+    },
+    {
+      "id": "version-identity",
+      "query": "Go 1.26 behavior",
+      "aspects": [],
+      "limit": 1,
+      "documents": [
+        {
+          "url": "https://old.example/version-identity",
+          "title": "Go 1.25 behavior",
+          "text": "In this fictional fixture, Go 1.25 behavior follows rule alpha."
+        },
+        {
+          "url": "https://new.example/version-identity",
+          "title": "Go 1.26 behavior",
+          "text": "In this fictional fixture, Go 1.26 behavior follows rule beta."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://new.example/version-identity",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "rule beta"
+      ]
+    },
+    {
+      "id": "copy-diversity",
+      "query": "cache expiration invalidation",
+      "aspects": [
+        "cache expiration",
+        "cache invalidation"
+      ],
+      "limit": 2,
+      "documents": [
+        {
+          "url": "https://original.example/copy-diversity",
+          "title": "Cache expiration",
+          "text": "Cache expiration removes stale entries after thirty minutes. Only public page text is stored. Refreshes atomically replace existing snapshots. Mirror original edition."
+        },
+        {
+          "url": "https://mirrorone.example/copy-diversity",
+          "title": "Cache expiration",
+          "text": "Cache expiration removes stale entries after thirty minutes. Only public page text is stored. Refreshes atomically replace existing snapshots. Mirror alternate edition."
+        },
+        {
+          "url": "https://mirrortwo.example/copy-diversity",
+          "title": "Cache expiration",
+          "text": "Cache expiration removes stale entries after thirty minutes. Only public page text is stored. Refreshes atomically replace existing snapshots. Mirror regional edition."
+        },
+        {
+          "url": "https://distinct.example/copy-diversity",
+          "title": "Cache invalidation",
+          "text": "Cache invalidation explicitly deletes a stored entry when the source changes; it need not wait for expiration."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://original.example/copy-diversity",
+          "grade": 3,
+          "aliases": [
+            "https://mirrorone.example/copy-diversity",
+            "https://mirrortwo.example/copy-diversity"
+          ]
+        },
+        {
+          "url": "https://distinct.example/copy-diversity",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "atomically replace",
+        "explicitly deletes"
+      ]
+    },
+    {
+      "id": "negation-conflict",
+      "query": "remote access permitted port 443",
+      "aspects": [],
+      "limit": 2,
+      "documents": [
+        {
+          "url": "https://positive.example/negation-conflict",
+          "title": "Remote access policy",
+          "text": "Remote access is permitted on port 443."
+        },
+        {
+          "url": "https://negative.example/negation-conflict",
+          "title": "Remote access policy",
+          "text": "Remote access is not permitted on port 443."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://positive.example/negation-conflict",
+          "grade": 3
+        },
+        {
+          "url": "https://negative.example/negation-conflict",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "is permitted",
+        "not permitted"
+      ]
+    },
+    {
+      "id": "numeric-conflict",
+      "query": "request quota per minute",
+      "aspects": [],
+      "limit": 2,
+      "documents": [
+        {
+          "url": "https://twenty.example/numeric-conflict",
+          "title": "Request quota",
+          "text": "The request quota is 20 per minute."
+        },
+        {
+          "url": "https://hundred.example/numeric-conflict",
+          "title": "Request quota",
+          "text": "The request quota is 100 per minute."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://twenty.example/numeric-conflict",
+          "grade": 3
+        },
+        {
+          "url": "https://hundred.example/numeric-conflict",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "20 per minute",
+        "100 per minute"
+      ]
+    },
+    {
+      "id": "aspect-coverage",
+      "query": "context cancellation deadline",
+      "aspects": [
+        "context cancellation",
+        "context deadline"
+      ],
+      "limit": 2,
+      "documents": [
+        {
+          "url": "https://cancel.example/aspect-coverage",
+          "title": "Context cancellation",
+          "text": "Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. Context cancellation makes workers release owned resources. "
+        },
+        {
+          "url": "https://deadline.example/aspect-coverage",
+          "title": "Context deadline",
+          "text": "A context deadline is the maximum time allowed for the request. Workers can inspect deadline expiry."
+        },
+        {
+          "url": "https://noise.example/aspect-coverage",
+          "title": "Cooking",
+          "text": "Ingredients are mixed before heating the oven."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://cancel.example/aspect-coverage",
+          "grade": 3
+        },
+        {
+          "url": "https://deadline.example/aspect-coverage",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "release owned resources",
+        "maximum time"
+      ]
+    },
+    {
+      "id": "unrelated-domain",
+      "query": "Go context cancellation",
+      "aspects": [],
+      "limit": 3,
+      "documents": [
+        {
+          "url": "https://docs.example/unrelated-domain",
+          "title": "Go context",
+          "text": "Go context cancellation propagates to downstream calls. Workers observe Done."
+        },
+        {
+          "url": "https://another.example/unrelated-domain",
+          "title": "Cancellation guide",
+          "text": "Go context cancellation requires workers to release resources they own."
+        },
+        {
+          "url": "https://noise.example/unrelated-domain",
+          "title": "Unrelated news",
+          "text": "Cooking and travel recommendations appear on this page."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://docs.example/unrelated-domain",
+          "grade": 3
+        },
+        {
+          "url": "https://another.example/unrelated-domain",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "downstream calls",
+        "release resources"
+      ]
+    },
+    {
+      "id": "chinese-aspects",
+      "query": "搜索机器人 如何控制并发和内存",
+      "aspects": [
+        "控制并发",
+        "限制内存"
+      ],
+      "limit": 2,
+      "documents": [
+        {
+          "url": "https://concurrency.example/chinese-aspects",
+          "title": "并发控制",
+          "text": "搜索机器人使用固定工作池控制并发。队列满时拒绝新任务，避免创建无限量的协程。"
+        },
+        {
+          "url": "https://memory.example/chinese-aspects",
+          "title": "内存控制",
+          "text": "搜索机器人流式读取网页并限制正文大小，避免把整张图片解码到内存。"
+        },
+        {
+          "url": "https://noise.example/chinese-aspects",
+          "title": "旅游攻略",
+          "text": "周末适合骑车游览公园，也可以带食物进行野餐。"
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://concurrency.example/chinese-aspects",
+          "grade": 3
+        },
+        {
+          "url": "https://memory.example/chinese-aspects",
+          "grade": 3
+        }
+      ],
+      "required_phrases": [
+        "固定工作池",
+        "流式读取"
+      ]
+    }
+  ]
+}
