@@ -94,3 +94,48 @@ func TestStrictDoctorUsesRealLocalRenderWithoutOnlineCalls(t *testing.T) {
 		}
 	}
 }
+
+func TestModelCheckUsesConfiguredProtocolWithoutLeakingCredentials(t *testing.T) {
+	for _, api := range []string{"chat_completions", "responses", "anthropic"} {
+		t.Run(api, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				var payload map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Error(err)
+				}
+				input, _ := json.Marshal(payload)
+				if len(input) < 10000 || payload["model"] != "fixture" {
+					t.Error("probe did not exercise representative input")
+				}
+				body := `{"ok":true,"summary":"Synthetic cancellation reference."}`
+				switch api {
+				case "chat_completions":
+					fmt.Fprintf(w, `{"choices":[{"message":{"content":%q},"finish_reason":"stop"}]}`, body)
+				case "responses":
+					fmt.Fprintf(w, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}]}`, body)
+				case "anthropic":
+					if r.Header.Get("x-api-key") != "private-never-print" {
+						t.Error("missing Anthropic auth")
+					}
+					fmt.Fprintf(w, `{"stop_reason":"end_turn","content":[{"type":"text","text":%q}]}`, body)
+				}
+			}))
+			defer srv.Close()
+			env := map[string]string{"MODEL_ENDPOINT": srv.URL, "MODEL_NAME": "fixture", "MODEL_API": api, "MODEL_API_KEY": "private-never-print", "SEARCHAN_MODEL_TIMEOUT": "1ms"}
+			var output bytes.Buffer
+			if err := run(context.Background(), []string{"model", "check", "-timeout", "2s"}, &output, func(k string) string { return env[k] }); err != nil {
+				t.Fatal(err)
+			}
+			if calls.Load() != 1 || !strings.Contains(output.String(), `"ready": true`) || strings.Contains(output.String(), "private-never-print") {
+				t.Fatal("bad model probe output", output.String())
+			}
+		})
+	}
+	for _, args := range [][]string{{"model"}, {"model", "wrong"}, {"model", "check", "-timeout", "-1s"}, {"model", "check", "-timeout", "3m"}, {"model", "check", "extra"}, {"model", "check"}} {
+		if err := run(context.Background(), args, &bytes.Buffer{}, func(string) string { return "" }); err == nil {
+			t.Fatalf("invalid/unconfigured model check accepted: %v", args)
+		}
+	}
+}

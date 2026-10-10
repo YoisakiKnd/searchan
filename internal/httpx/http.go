@@ -34,9 +34,13 @@ func (e *StatusError) Error() string { return fmt.Sprintf("remote HTTP status %d
 // Decode consumes one JSON value, with a strict total byte limit and no
 // intermediate full-response byte slice. It also rejects trailing JSON.
 func Decode(r io.Reader, max int64, out any) error {
-	lr := &io.LimitedReader{R: r, N: max + 1}
+	tracked := &readErrorTracker{Reader: r}
+	lr := &io.LimitedReader{R: tracked, N: max + 1}
 	dec := json.NewDecoder(lr)
 	if err := dec.Decode(out); err != nil {
+		if lr.N > 0 && tracked.err != nil {
+			return fmt.Errorf("read JSON response: %w", tracked.err)
+		}
 		return errors.New("invalid or oversized JSON response")
 	}
 	var extra any
@@ -45,9 +49,27 @@ func Decode(r io.Reader, max int64, out any) error {
 		return errors.New("JSON response exceeds size limit")
 	}
 	if err != io.EOF {
+		if tracked.err != nil {
+			return fmt.Errorf("read JSON response: %w", tracked.err)
+		}
 		return errors.New("unexpected trailing JSON data")
 	}
 	return nil
+}
+
+// Distinguish a broken response body from a complete but malformed JSON value.
+// The decoder's own unexpected EOF must not make invalid model JSON retryable.
+type readErrorTracker struct {
+	io.Reader
+	err error
+}
+
+func (r *readErrorTracker) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if err != nil && err != io.EOF {
+		r.err = err
+	}
+	return n, err
 }
 
 func JSON(ctx context.Context, client *http.Client, method, endpoint string, headers map[string]string, payload, out any, max int64) error {
@@ -78,7 +100,10 @@ func JSON(ctx context.Context, client *http.Client, method, endpoint string, hea
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return &StatusError{res.StatusCode, res.Header.Get("Retry-After")}
 	}
-	return Decode(res.Body, max, out)
+	if err := Decode(res.Body, max, out); err != nil {
+		return TransportError(ctx, err)
+	}
+	return nil
 }
 
 func TransportError(ctx context.Context, err error) error {

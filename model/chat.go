@@ -1,11 +1,11 @@
-// Package model implements a small configurable Chat Completions JSON client.
+// Package model implements bounded JSON generation across model protocols.
 package model
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -15,60 +15,80 @@ import (
 type Completer interface {
 	Complete(context.Context, string, any, any) error
 }
-type Chat struct {
+
+type Client struct {
 	Endpoint, APIKey, Model string
+	API                     string // auto, chat_completions, responses, anthropic
+	Auth                    string // auto, bearer, x-api-key, api-key
+	AnthropicVersion        string
 	MaxTokens               int
+	TokenParameter          string // auto, max_tokens, max_completion_tokens (chat only)
 	JSONMode                bool
+	Thinking                string // auto, enabled, disabled, adaptive (Anthropic only)
+	ThinkingBudget          int    // Anthropic enabled mode only
+	ReasoningEffort         string // optional; accepted values depend on the model
+	MaxRetries              int    // 0 or 1; retries share the original deadline
 	Client                  *http.Client
 }
 
-func (c *Chat) Complete(ctx context.Context, system string, input, out any) error {
-	u, err := url.Parse(c.Endpoint)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") || c.Model == "" {
-		return errors.New("model endpoint and name are required")
+// Chat preserves the original library API while Client supports all three protocols.
+type Chat = Client
+
+func (c *Client) Validate() error {
+	_, _, _, err := c.request("", nil)
+	return err
+}
+
+func (c *Client) Complete(ctx context.Context, system string, input, out any) error {
+	if _, bounded := ctx.Deadline(); !bounded {
+		var stop context.CancelFunc
+		ctx, stop = context.WithTimeout(ctx, 30*time.Second)
+		defer stop()
 	}
-	var msg strings.Builder
-	// Encode with the same strict bounded representation used for test fixtures.
 	data, err := marshalInput(input)
 	if err != nil {
 		return err
 	}
-	msg.Write(data)
-	if msg.Len() > 128<<10 {
+	if len(data) > 128<<10 {
 		return errors.New("model input exceeds 128 KiB")
 	}
-	tokens := c.MaxTokens
-	if tokens <= 0 {
-		tokens = 2400
-	}
-	payload := map[string]any{"model": c.Model, "messages": []map[string]string{{"role": "system", "content": system}, {"role": "user", "content": msg.String()}}, "max_tokens": tokens, "stream": false}
-	if c.JSONMode {
-		payload["response_format"] = map[string]string{"type": "json_object"}
+	api, headers, payload, err := c.request(system, data)
+	if err != nil {
+		return err
 	}
 	client := c.Client
 	if client == nil {
-		client = httpx.NewClient(30 * time.Second)
+		client = defaultClient
 	}
-	headers := map[string]string{}
-	if c.APIKey != "" {
-		headers["Authorization"] = "Bearer " + c.APIKey
-	}
-	var wire struct {
-		Choices []struct {
-			Message      struct{ Content string }
-			FinishReason string `json:"finish_reason"`
+	var wire response
+	start := time.Now()
+	for attempt := 0; ; attempt++ {
+		err := httpx.JSON(ctx, client, "POST", c.Endpoint, headers, payload, &wire, 256<<10)
+		if err == nil {
+			break
 		}
+		if attempt >= c.MaxRetries || !retryable(ctx, err) || !retryBudget(ctx) {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("model HTTP request failed (api=%s, attempts=%d, input_bytes=%d, elapsed=%s): %w", api, attempt+1, len(data), time.Since(start).Round(time.Millisecond), err)
+		}
+		client.CloseIdleConnections()
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		// A broken response may have partially populated the previous attempt.
+		wire = response{}
 	}
-	if err := httpx.JSON(ctx, client, "POST", c.Endpoint, headers, payload, &wire, 256<<10); err != nil {
+	content, err := wire.text(api)
+	if err != nil {
 		return err
 	}
-	if len(wire.Choices) != 1 || wire.Choices[0].Message.Content == "" {
-		return errors.New("model returned no answer")
-	}
-	if wire.Choices[0].FinishReason == "length" {
-		return errors.New("model output was truncated")
-	}
-	content := strings.TrimSpace(wire.Choices[0].Message.Content)
+	content = strings.TrimSpace(content)
 	if strings.HasPrefix(content, "```json") && strings.HasSuffix(content, "```") {
 		content = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(content, "```json"), "```"))
 	}

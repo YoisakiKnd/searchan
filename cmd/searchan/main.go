@@ -32,7 +32,7 @@ func main() {
 func run(ctx context.Context, args []string, out io.Writer, getenv func(string) string) error {
 	if len(args) > 0 {
 		switch args[0] {
-		case "ask", "demo", "serve", "doctor", "eval", "healthcheck", "telegram", "version":
+		case "ask", "demo", "serve", "doctor", "eval", "healthcheck", "telegram", "version", "model":
 			return modes(ctx, args, out, getenv)
 		}
 	}

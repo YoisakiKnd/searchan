@@ -2,7 +2,7 @@
 
 Go 搜索 Bot：多后端检索 → 读取网页 → 筛选证据 → 带引用总结与核验 → Typst 渲染 PNG → Telegram / QQ 回复。不读取群聊历史。
 
-已实现六个独立搜索适配器、直接 HTTP / Jina Reader、可配置的 Chat Completions JSON 模型客户端、证据与引用校验、固定 Typst 模板、平台 Webhook / 发送适配、有界持久任务队列和发送记录。真实供应商、模型效果及 Bot 账号权限仍需在部署环境联调；模拟测试不代表搜索质量评测。
+已实现六个独立搜索适配器、直接 HTTP / Jina Reader、OpenAI Chat Completions / Responses 与 Anthropic Messages 模型客户端、证据与引用校验、固定 Typst 模板、平台 Webhook / 发送适配、有界持久任务队列和发送记录。真实供应商、模型效果及 Bot 账号权限仍需在部署环境联调；模拟测试不代表搜索质量评测。
 
 Telegram 首发使用 Linux + systemd，提供原生安装、升级/回滚脚本和 amd64/arm64 打包工具，无需 Docker。部署、预检、备份和验收步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。尚未配置真实服务器与凭据，本地通过不等于已经上线。
 
@@ -43,7 +43,31 @@ set +a
 
 `ask` 生成 `output.json` 和 `page-1.png` 等图片。JSON 保存搜索计划、段落证据、文档哈希、引用绑定、来源、警告和阶段耗时。离线示例见 [示例图片](artifacts/demo/page-1.png)。
 
-模型配置使用完整 `MODEL_ENDPOINT`（例如自己的 `/v1/chat/completions` 地址）、`MODEL_NAME` 和 `MODEL_API_KEY`。接口须支持普通 Chat Completions 与文本 JSON 输出；其他协议需新增适配器。若不支持 `response_format`，设置 `MODEL_JSON_MODE=false`。未配置模型时，ask / Bot 搜索直接报错，doctor 也不通过；独立原始搜索命令仍可使用。
+模型配置使用完整 `MODEL_ENDPOINT`、`MODEL_NAME` 和 `MODEL_API_KEY`。支持以下三种非流式文本协议，也可使用兼容它们的自建服务或网关；URL 原样使用，保留路径前缀和查询参数，不自动补路径。未配置模型时，ask / Bot 搜索直接报错，doctor 也不通过；独立原始搜索命令仍可使用。
+
+| 协议 | 完整端点示例 | `MODEL_API` | 默认认证与输出额度 |
+| --- | --- | --- | --- |
+| OpenAI Chat Completions | `https://api.openai.com/v1/chat/completions` | `chat_completions` | Bearer；官方 OpenAI 使用 `max_completion_tokens`，其他地址使用 `max_tokens` |
+| OpenAI Responses | `https://api.openai.com/v1/responses` | `responses` | Bearer；`max_output_tokens` |
+| Anthropic Messages | `https://api.anthropic.com/v1/messages` | `anthropic` | `x-api-key`、`anthropic-version: 2023-06-01`；`max_tokens` |
+
+`MODEL_API=auto` 根据 URL 尾部 `/responses`、`/messages` 识别协议，否则按 Chat Completions 处理。网关使用自定义路径时显式指定协议。`MODEL_AUTH` 可选 `auto`、`bearer`、`x-api-key`、`api-key`，只发送选定的认证头；例如使用 Bearer 的 Anthropic 网关需设置 `MODEL_AUTH=bearer`。Chat 网关如要求新 token 参数，设置 `MODEL_TOKEN_PARAMETER=max_completion_tokens`。依赖 AWS 签名、Google OAuth 等独立云认证的入口，需要先接兼容网关，当前客户端不自动获取这些凭据。
+
+`MODEL_JSON_MODE=true` 在 Chat 使用 `response_format`，在 Responses 使用 `text.format`；不支持 JSON 模式的网关可关闭该选项。Anthropic 不发送这些 OpenAI 字段，依靠统一的 JSON 提示词与本地格式、引用校验。三种协议均拒绝空回答、截断、拒答及工具调用；Responses 从所有消息文本块提取正文，Anthropic 跳过思考块，不把思考过程当答案。
+
+思考控制默认 `MODEL_THINKING=auto`：未知服务不发送厂商专用思考字段，官方 `api.deepseek.com` 的 Chat 请求则显式关闭思考，节省本项目有限的时间与输出额度。可显式设置 `enabled` / `disabled`；`adaptive` 仅供支持该模式的 Anthropic 模型。官方 OpenAI Chat 使用 `MODEL_REASONING_EFFORT` 控制推理；Responses 使用其原生 `reasoning.effort`；Anthropic 使用 `thinking` 和可选 `output_config.effort`。`MODEL_THINKING_BUDGET` 仅用于 Anthropic 的 enabled 模式，默认 1024，须小于 `MODEL_MAX_TOKENS`。参数是否可用、effort 的取值范围取决于具体模型；不支持时应去掉配置，不会自动改协议或降级掩盖错误。
+
+`MODEL_RETRIES=1` 默认只对连接重置、响应传输中断及无 Retry-After 的 502 / 503 / 504 重试一次，等待 200 ms，且要求当前阶段至少剩余 2 秒。重试共享原 deadline；认证错误、429、非法 JSON、输出截断不会重试。重试可能产生第二次计费请求，设为 0 可禁用。模型使用独立连接池，取消搜索客户端的 15 秒响应头限制，以阶段超时和 HTTP 总超时控制完整请求；搜索、阅读和平台发送的超时保持独立。
+
+按实际配置发起模型自检（会调用模型，可能计费；不搜索或发送平台消息）：
+
+```sh
+./bin/searchan model check -timeout 30s
+# Linux 服务账号与相同 EnvironmentFile：
+sudo /opt/searchan/bin/searchan-admin model check -timeout 30s
+```
+
+自检发送约 10 KB 合成资料并校验 JSON，仅输出就绪状态、输入大小与耗时；不会打印密钥或模型原始回答。它验证模型通路，不代替真实搜索和 Telegram 交付验收。
 
 ## 搜索与证据策略
 
@@ -106,7 +130,8 @@ Go 库入口：`search.NewProvider(name, config)`、`NewDDG`、`NewBrave` 等；
 | 全局搜索 / 正文 / Typst 并发 | 3 / 3 / 1 |
 | Webhook 同时处理 | 32 |
 | 标准搜索调用 / 阅读尝试上限 | 6 / 8 |
-| 模型调用上限 | 5（规划、覆盖、生成、核验、一次短总结） |
+| 模型逻辑调用上限 | 5（规划、覆盖、生成、核验、一次短总结） |
+| 模型 HTTP 请求上限 | 默认最多 10（每次逻辑调用至多重试一次，仍受阶段及总时间限制） |
 | 网页响应 / 正文 | 2 MiB / 64 KiB |
 | 证据 | 12 段，每段 ≤1800 bytes |
 | 答案 / 图片 | 12 KB 内容预算，最多 3 页 |

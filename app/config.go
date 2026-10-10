@@ -48,6 +48,7 @@ type Config struct {
 type Runtime struct {
 	Config   Config
 	Engine   *research.Engine
+	Model    model.Completer
 	Renderer render.Renderer
 	Typst    *render.Typst
 	Senders  map[string]platform.Sender
@@ -251,6 +252,7 @@ func New(getenv func(string) string) (*Runtime, error) {
 		providers = append(providers, p)
 	}
 	var lm model.Completer
+	clients := []*http.Client{serviceClient}
 	if endpoint := getenv("MODEL_ENDPOINT"); endpoint != "" {
 		if getenv("MODEL_NAME") == "" {
 			return nil, errors.New("MODEL_NAME is required with MODEL_ENDPOINT")
@@ -263,7 +265,28 @@ func New(getenv func(string) string) (*Runtime, error) {
 		if err != nil {
 			return nil, err
 		}
-		lm = &model.Chat{Endpoint: endpoint, APIKey: getenv("MODEL_API_KEY"), Model: getenv("MODEL_NAME"), MaxTokens: maxTokens, JSONMode: jsonMode, Client: serviceClient}
+		retries, err := intEnv(getenv, "MODEL_RETRIES", 1)
+		if err != nil || retries < 0 || retries > 1 {
+			return nil, errors.New("MODEL_RETRIES must be 0 or 1")
+		}
+		thinkingBudget, err := intEnv(getenv, "MODEL_THINKING_BUDGET", 0)
+		if err != nil {
+			return nil, err
+		}
+		completion := &model.Client{
+			Endpoint: endpoint, APIKey: getenv("MODEL_API_KEY"), Model: getenv("MODEL_NAME"),
+			API: getenv("MODEL_API"), Auth: getenv("MODEL_AUTH"), AnthropicVersion: getenv("MODEL_ANTHROPIC_VERSION"),
+			MaxTokens: maxTokens, TokenParameter: getenv("MODEL_TOKEN_PARAMETER"), JSONMode: jsonMode,
+			Thinking: getenv("MODEL_THINKING"), ThinkingBudget: thinkingBudget,
+			ReasoningEffort: getenv("MODEL_REASONING_EFFORT"), MaxRetries: retries,
+		}
+		if err := completion.Validate(); err != nil {
+			return nil, err
+		}
+		modelClient := model.NewHTTPClient(cfg.ModelTimeout)
+		clients = append(clients, modelClient)
+		completion.Client = modelClient
+		lm = completion
 	}
 	direct := reader.NewHTTP(nil)
 	cached := &reader.Cache{Dir: cfg.DataDir + "/cache/pages", TTL: 30 * time.Minute, Next: direct}
@@ -284,7 +307,7 @@ func New(getenv func(string) string) (*Runtime, error) {
 	if fonts := getenv("TYPST_FONT_PATHS"); fonts != "" {
 		renderer.FontPaths = strings.Split(fonts, string(os.PathListSeparator))
 	}
-	runtime := &Runtime{Config: cfg, Engine: engine, Renderer: renderer, Typst: renderer, Cache: cached, Senders: map[string]platform.Sender{}, Clients: []*http.Client{serviceClient}}
+	runtime := &Runtime{Config: cfg, Engine: engine, Model: lm, Renderer: renderer, Typst: renderer, Cache: cached, Senders: map[string]platform.Sender{}, Clients: clients}
 	if token := getenv("TELEGRAM_BOT_TOKEN"); token != "" {
 		runtime.Telegram = &platform.Telegram{Token: token, WebhookSecret: getenv("TELEGRAM_WEBHOOK_SECRET"), Username: strings.TrimPrefix(getenv("TELEGRAM_BOT_USERNAME"), "@"), Endpoint: getenv("TELEGRAM_API_ENDPOINT"), Client: serviceClient}
 		runtime.Senders["telegram"] = platform.RetrySender{Next: runtime.Telegram}

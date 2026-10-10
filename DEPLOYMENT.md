@@ -72,6 +72,18 @@ sudo journalctl -u searchan -n 100
 
 searchan-admin 通过 systemd 临时单元，以服务账号和相同环境执行管理命令，不通过 shell 加载密钥。严格预检只验证本地，不调用付费搜索或模型，不证明真实密钥有效。AI 总结为必需功能，普通 doctor 也会拒绝缺少模型配置；仅有搜索摘要或核验遇到问题时返回带限制说明的短总结，生成及引用校验失败会明确报错。
 
+模型支持 OpenAI Chat Completions / Responses、Anthropic Messages 及兼容网关；协议识别、认证和思考配置见 [README 模型说明](README.md)。必须填写完整 URL。自定义路径需要显式设置 `MODEL_API`，使用 Bearer 认证的 Anthropic 网关另设 `MODEL_AUTH=bearer`。新参数需升级到包含该功能的版本，旧安装包不会自动获得代码更新。
+
+若小请求成功、实际总结报连接重置，先用服务的相同账号、环境和较大输入检查模型通路：
+
+```sh
+sudo /opt/searchan/bin/searchan-admin model check -timeout 30s
+```
+
+该命令主动调用模型，默认允许一次传输重试，可能计费；不发搜索请求或 Telegram 消息。它会发送约 10 KB 合成资料并要求 JSON，成功后输出耗时。连接重置本身无法证明是思考参数、超时或供应商故障；查看 journal 中协议、尝试次数、输入大小和耗时，再与服务商日志核对。升级后的独立模型连接池不再受搜索连接池的 15 秒响应头上限影响，仍受任务和阶段总预算约束。
+
+默认规划 4 秒、模型阶段 18 秒、研究 45 秒、任务 90 秒。只提高 `SEARCHAN_MODEL_TIMEOUT` 不一定增加实际可用时间，因为研究剩余额度会继续裁剪阶段 deadline。先用自检测量服务耗时，再一起调整模型与研究时间，并为 Typst 和发送留出任务额度。官方 DeepSeek 默认关闭思考；其他端点默认不附加专用思考字段，按模型文档明确配置。
+
 ## HTTPS 和 Telegram 回调
 
 使用现有反向代理，或参考 `deploy/Caddyfile.native`，把 bot.example.org 改为你的域名并按主机的 Caddy 安装方式配置。只公开 `POST /webhooks/telegram`，代理到 `127.0.0.1:8090`；health/readiness 不公开。Caddy 安装独立于 Searchan 安装器，避免覆盖已有网站配置。
