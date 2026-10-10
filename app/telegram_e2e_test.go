@@ -144,7 +144,7 @@ func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, snippetOnly boo
 	case <-time.After(8 * time.Second):
 		t.Fatal("graceful shutdown stalled")
 	}
-	if images.Load() != 1 || texts.Load() != 2 || p.calls.Load() != 1 {
+	if images.Load() != 1 || texts.Load() != 1 || p.calls.Load() != 1 {
 		t.Fatalf("images=%d texts=%d searches=%d", images.Load(), texts.Load(), p.calls.Load())
 	}
 	if snippetOnly && (renderer.output.AnswerMode != "brief_summary" || !strings.Contains(renderer.output.Text(), "未读取原文")) {

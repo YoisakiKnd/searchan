@@ -167,6 +167,10 @@ func (e *Engine) gather(ctx context.Context, out *Output) []hit {
 			}
 			for _, q := range coverage.Queries {
 				q = strings.TrimSpace(q)
+				if q == "" {
+					continue
+				}
+				q = anchoredQuery(out.Query, q)
 				if len(coverage.Missing) > 0 && q != "" && len(q) <= 2048 && !contains(recoveryQueries, q) && len(recoveryQueries) < 2 {
 					recoveryQueries = append(recoveryQueries, q)
 				}
@@ -189,6 +193,11 @@ func (e *Engine) gather(ctx context.Context, out *Output) []hit {
 	if needRecovery && gatherCtx.Err() == nil && out.Stats.PagesRead < e.cfg.MaxPages {
 		t = time.Now()
 		out.Stats.RecoveryRounds++
+		if len(out.Evidence) == 0 && len(queryEntities(out.Query)) > 0 {
+			// Repair entity recall before broad aspect queries consume the reserve.
+			recoveryQueries = append([]string{strings.Join(queryEntities(out.Query), " ") + " overview official documentation"}, recoveryQueries...)
+			recoveryQueries = recoveryQueries[:min(2, len(recoveryQueries))]
+		}
 		if len(recoveryQueries) == 0 {
 			// Try the original query on unused providers before rewriting it.
 			recoveryQueries = []string{out.Query}

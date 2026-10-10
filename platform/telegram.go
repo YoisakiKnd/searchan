@@ -1,16 +1,11 @@
 package platform
 
 import (
-	"bytes"
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -98,57 +93,7 @@ func platformHTTPError(err error) error {
 }
 
 func (t *Telegram) SendImage(ctx context.Context, target Target, image render.Artifact, caption string, _ int) (Receipt, error) {
-	f, err := os.Open(image.Path)
-	if err != nil {
-		return Receipt{}, &RejectedError{Code: 404}
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || info.Size() > 8<<20 {
-		return Receipt{}, &RejectedError{Code: 413}
-	}
-	// Prefix + file + suffix streams multipart without a goroutine or whole-image
-	// buffer. Only metadata/header bytes are retained in memory.
-	var prefix bytes.Buffer
-	writer := multipart.NewWriter(&prefix)
-	_ = writer.WriteField("chat_id", target.ChatID)
-	if caption != "" {
-		_ = writer.WriteField("caption", caption)
-	}
-	if target.ThreadID != 0 {
-		_ = writer.WriteField("message_thread_id", strconv.FormatInt(target.ThreadID, 10))
-	}
-	if id, err := strconv.ParseInt(target.MessageID, 10, 64); err == nil {
-		raw, _ := json.Marshal(map[string]any{"message_id": id, "allow_sending_without_reply": true})
-		_ = writer.WriteField("reply_parameters", string(raw))
-	}
-	if _, err := writer.CreateFormFile("photo", "answer.png"); err != nil {
-		return Receipt{}, err
-	}
-	head := append([]byte(nil), prefix.Bytes()...)
-	prefix.Reset()
-	if err := writer.Close(); err != nil {
-		return Receipt{}, err
-	}
-	tail := prefix.Bytes()
-	body := io.MultiReader(bytes.NewReader(head), io.LimitReader(f, info.Size()), bytes.NewReader(tail))
-	req, err := http.NewRequestWithContext(ctx, "POST", t.endpoint("sendPhoto"), body)
-	if err != nil {
-		return Receipt{}, &RejectedError{Code: 400}
-	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.ContentLength = int64(len(head)+len(tail)) + info.Size()
-	res, err := t.client().Do(req)
-	if err != nil {
-		return Receipt{}, httpx.TransportError(ctx, err)
-	}
-	var result struct {
-		MessageID int64 `json:"message_id"`
-	}
-	if err := telegramDecode(res, &result); err != nil {
-		return Receipt{}, err
-	}
-	return telegramReceipt(telegramResponse{OK: true, Result: result})
+	return t.sendPhotos(ctx, target, []render.Artifact{image}, caption, "")
 }
 
 func (t *Telegram) DecodeWebhook(r *http.Request) (Event, error) {

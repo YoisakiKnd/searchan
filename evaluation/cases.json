@@ -354,6 +354,49 @@
         "固定工作池",
         "流式读取"
       ]
+    },
+    {
+      "id": "compound-project-identity",
+      "query": "SpringData简介",
+      "aspects": [
+        "Spring Framework Data Access",
+        "repository abstractions"
+      ],
+      "limit": 4,
+      "documents": [
+        {
+          "url": "https://docs.example/framework",
+          "title": "Spring Framework Documentation",
+          "text": "Spring Framework Data Access overview lists transactions, JDBC, testing and integration."
+        },
+        {
+          "url": "https://docs.example/data",
+          "title": "Spring Data",
+          "text": "Spring Data provides repository abstractions for accessing different data stores."
+        },
+        {
+          "url": "https://noise.example/database",
+          "title": "SpringDatabase",
+          "text": "SpringDatabase is an unrelated fictional identifier in this synthetic fixture."
+        }
+      ],
+      "judgments": [
+        {
+          "url": "https://docs.example/data",
+          "grade": 3
+        },
+        {
+          "url": "https://docs.example/framework",
+          "grade": 0
+        },
+        {
+          "url": "https://noise.example/database",
+          "grade": 0
+        }
+      ],
+      "required_phrases": [
+        "repository abstractions"
+      ]
     }
   ]
 }

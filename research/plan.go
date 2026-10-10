@@ -65,9 +65,16 @@ func normalizePlan(base, proposed Plan) Plan {
 		base.Intent = proposed.Intent
 		base.RequiresFresh = base.RequiresFresh || proposed.Intent == "recent"
 	}
-	seen := map[string]bool{queryKey(base.Queries[0]): true}
+	seen := map[string]bool{}
+	for _, q := range base.Queries {
+		seen[queryKey(q)] = true
+	}
 	for _, q := range proposed.Queries {
 		q = strings.Join(strings.Fields(q), " ")
+		if q == "" {
+			continue
+		}
+		q = anchoredQuery(base.Queries[0], q)
 		key := queryKey(q)
 		if q != "" && len(q) <= 2048 && !seen[key] && len(base.Queries) < 3 {
 			base.Queries = append(base.Queries, q)

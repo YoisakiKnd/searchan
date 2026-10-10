@@ -47,6 +47,7 @@ type Table struct {
 	Rows    []TableRow `json:"rows"`
 }
 type Answer struct {
+	AnswersQuery  *bool     `json:"answers_query,omitempty"`
 	Title         string    `json:"title"`
 	Lead          Claim     `json:"lead"`
 	Sections      []Section `json:"sections"`

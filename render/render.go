@@ -186,7 +186,12 @@ func (r *Typst) Render(ctx context.Context, task string, o research.Output, dest
 	if err := os.WriteFile(filepath.Join(work, "card.typ"), []byte(template), 0600); err != nil {
 		return nil, err
 	}
-	args := []string{"compile", "--root", work, "--ppi", "152"}
+	maxPages := r.MaxPages
+	if maxPages <= 0 {
+		maxPages = 3
+	}
+	maxPages = min(24, maxPages)
+	args := []string{"compile", "--root", work, "--ppi", "152", "--input", "max-pages=" + strconv.Itoa(maxPages)}
 	for _, font := range r.FontPaths {
 		args = append(args, "--font-path", font)
 	}
@@ -207,10 +212,6 @@ func (r *Typst) Render(ctx context.Context, task string, o research.Output, dest
 		return nil, err
 	}
 	sort.Strings(paths)
-	maxPages := r.MaxPages
-	if maxPages <= 0 {
-		maxPages = 3
-	}
 	if len(paths) == 0 || len(paths) > maxPages {
 		return nil, fmt.Errorf("rendered %d pages; limit is %d", len(paths), maxPages)
 	}
@@ -228,7 +229,7 @@ func (r *Typst) Render(ctx context.Context, task string, o research.Output, dest
 		if decodeErr != nil || statErr != nil {
 			return nil, errors.New("invalid rendered PNG")
 		}
-		if cfg.Width > 4096 || cfg.Height > 8192 || cfg.Width < 400 || info.Size() > 8<<20 {
+		if cfg.Width > 4096 || cfg.Height > 6000 || cfg.Width+cfg.Height > 10000 || cfg.Width < 400 || cfg.Height < 1 || cfg.Height > cfg.Width*20 || cfg.Width > cfg.Height*20 || info.Size() > 8<<20 {
 			return nil, errors.New("rendered PNG exceeds platform budget")
 		}
 		artifacts = append(artifacts, Artifact{Path: filepath.Join(abs, filepath.Base(path)), Width: cfg.Width, Height: cfg.Height, Bytes: info.Size()})

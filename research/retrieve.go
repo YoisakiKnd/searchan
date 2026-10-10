@@ -266,8 +266,10 @@ func rankHits(plan Plan, hits []hit, attempted map[string]bool, limit int) []hit
 		return nil
 	}
 	query := ""
+	var entities []string
 	if len(plan.Queries) > 0 {
 		query = plan.Queries[0]
+		entities = queryEntities(query)
 	}
 	query += " " + strings.Join(plan.focus, " ")
 	l := newLexical(query, plan.Aspects, plan.Queries)
@@ -305,6 +307,12 @@ func rankHits(plan Plan, hits []hit, attempted map[string]bool, limit int) []hit
 	}
 	for i := range candidates {
 		candidates[i].score = .65*scores[i]/math.Max(peakLexical, 1e-9) + .35*candidates[i].hit.fusion/math.Max(peakFusion, 1e-9)
+		if len(entities) > 0 {
+			h := candidates[i].hit
+			if matchesEntities(h.Title+" "+h.URL+" "+h.Snippet+" "+reader.Clip(h.Content, 1600), entities) {
+				candidates[i].score += 1
+			}
+		}
 	}
 	used := make([]bool, len(candidates))
 	domains := map[string]int{}

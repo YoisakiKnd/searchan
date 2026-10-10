@@ -162,6 +162,33 @@ TYPST_BIN=/path/to/typst sh scripts/verify.sh
 | 搜索质量 | 事实、技术、比较、时效、核实、无答案题目人工核对来源支持与缺口 |
 | 运维 | 日志容量、磁盘告警、敏感备份和恢复流程可用 |
 
-内置 10 题是合成开发回归集，不能代替真实搜索质量、事实正确率或引用支持率。服务器及凭据准备后，再执行真实验收；当前没有上线成功或“搜索效果最好”的实测结论。
+内置 11 题是合成开发回归集，不能代替真实搜索质量、事实正确率或引用支持率。服务器及凭据准备后，再执行真实验收；当前没有上线成功或“搜索效果最好”的实测结论。
 
 Docker 仍可选，见源码的 `deploy/DOCKER.md`，不是原生部署或发布前提。协议参考：[Telegram Webhook](https://core.telegram.org/bots/api#setwebhook)、[响应参数](https://core.telegram.org/bots/api#responseparameters)。
+
+## QQ OneBot / NapCat 可选
+
+需要 QQ 合并聊天记录时，在自己的 QQ 网关上启用 OneBot v11 HTTP API，并支持 `send_group_forward_msg` / `send_private_forward_msg` 自定义节点扩展；单独的 QQ 官方 Bot API 不具备这个接口。此模式不需要 `QQ_APP_ID` / `QQ_APP_SECRET`，也不改变 Telegram 配置。
+
+在 `/etc/searchan.env` 中配置：
+
+```ini
+QQ_BACKEND=onebot
+ONEBOT_ENDPOINT=http://127.0.0.1:3000
+ONEBOT_ACCESS_TOKEN=填写网关_HTTP_Server_的_token
+ONEBOT_WEBHOOK_SECRET=填写至少32字节的上报签名密钥
+ONEBOT_SELF_ID=填写机器人QQ号
+SEARCHAN_ALLOWED_CHATS=telegram:已有群ID,qq:允许的QQ群号
+```
+
+`ONEBOT_ENDPOINT` 是 API 根地址，支持路径前缀，不包含 token 或 action。API token 和上报签名密钥分别生成并保存在配置里，不在聊天中发送；例如各执行一次 `openssl rand -hex 32`。例子中的占位文字必须替换。`ONEBOT_SELF_ID` 必须是实际登录的 QQ 号，接收时检查它与事件 `self_id` 一致。
+
+NapCat 配置两条 HTTP 连接：HTTP Server 监听 API 地址，token 对应 `ONEBOT_ACCESS_TOKEN`；HTTP Client 上报 URL 为 `http://127.0.0.1:8090/webhooks/onebot`，其 **token** 对应 `ONEBOT_WEBHOOK_SECRET`，消息格式选择 **array**。NapCat HTTP Client 用该 token 计算 `X-Signature: sha1=...`；其他 OneBot 实现可能将同一签名配置叫 `secret`。请根据所用网关的当前界面确认字段，不能仅配置 API token 就忽略上报签名。
+
+网关与 Searchan 不在同一主机时，应使用受控内网或 HTTPS。`deploy/Caddyfile.native` 默认只开放 Telegram；需要公网 OneBot 回调时，在该 POST 路径匹配器中增加 `/webhooks/onebot`，保留验签，不对公网开放网关管理/API 端口。无效签名、错误机器人 ID、非白名单群不会启动搜索；机器人自身消息和发给其他机器人的 @ 消息被忽略。
+
+更新配置后执行 `sudo searchan-admin doctor -strict`，再重启 Searchan。用允许的 QQ 会话发送 `/search SpringData简介`，确认只收到一份合并聊天记录，内含全部 PNG、摘要、限制和来源链接；开始搜索的状态消息仍单独发送。用未允许的群重复测试不能启动任务，并检查重复上报不会重复创建任务。图片以流式 base64 传送，无需两端共享磁盘。
+
+`doctor` 目前只验证 OneBot 本地配置与中文渲染，不登录或实际调用网关。实际 QQ 权限、网关版本、转发成功、手机显示与网络占用仍需按账号验收。`async`、网络错误、缺失最终 message ID 或通用发送错误会进入 `uncertain`，先核对 QQ 是否收到，再人工决定是否重新提问。切换 QQ_BACKEND 前应处理完已有 QQ 任务；官方 openid 与 OneBot 数字 QQ 号不能互换。
+
+协议依据：[OneBot HTTP POST 验签](https://github.com/botuniverse/onebot-11/blob/master/communication/http-post.md)、[合并转发扩展](https://docs.go-cqhttp.org/api/#发送合并转发-群聊)、[NapCat HTTP Client](https://github.com/NapNeko/NapCatQQ/blob/main/packages/napcat-onebot/network/http-client.ts)。

@@ -1,5 +1,5 @@
 #let data = json("answer.json")
-#set page(width: 180mm, height: 280mm, margin: (top: 14mm, bottom: 16mm, x: 13mm), fill: rgb("#f6f8fb"), numbering: "1 / 1")
+#set page(width: 180mm, height: auto, margin: (top: 14mm, bottom: 16mm, x: 13mm), fill: rgb("#f6f8fb"), numbering: none)
 #set text(font: ("Noto Sans CJK SC", "Heiti SC", "Songti SC", "Arial"), size: 12pt, fill: rgb("#172639"), lang: "zh")
 #set par(leading: 0.65em, justify: false)
 #set heading(numbering: none)
@@ -7,6 +7,7 @@
 #let citation(c) = if c.citation != "" { text(size: 9pt, fill: rgb("#377c96"), " " + c.citation) }
 #let claim(c) = [#text(c.text)#citation(c)]
 
+#let report = [
 #text(size: 8.5pt, tracking: 1pt, fill: rgb("#46748b"))[SEARCHAN · 搜索报告]
 #v(0.7em)
 #text(size: 21pt, weight: "bold", data.title)
@@ -44,3 +45,13 @@
   #v(0.5em)
   #text(size: 8pt, fill: rgb("#718096"))[可点击链接见附带文字；检索排序不代表事实可信度。]
 ]
+]
+
+// Measure layout before PNG export; never rasterize an unbounded long image.
+#context {
+  let height = measure(block(width: 154mm, report)).height
+  let max-pages = int(sys.inputs.at("max-pages", default: "3"))
+  assert(height <= calc.max(470mm, max-pages * 250mm), message: "report exceeds page budget")
+  let paged = height > 470mm
+  page(height: if paged { 280mm } else { auto }, numbering: if paged { "1 / 1" } else { none }, report)
+}

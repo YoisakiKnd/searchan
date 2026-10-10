@@ -11,6 +11,7 @@ import (
 	"searchan/internal/httpx"
 
 	"searchan/render"
+	"searchan/research"
 )
 
 var defaultClient = httpx.NewClient(30 * time.Second)
@@ -34,6 +35,19 @@ type Receipt struct {
 type Sender interface {
 	SendText(context.Context, Target, string, int) (Receipt, error)
 	SendImage(context.Context, Target, render.Artifact, string, int) (Receipt, error)
+}
+
+// ReportSender delivers the images and their linked sources as one platform
+// result. Capabilities survive wrappers without claiming support for adapters
+// that only implement the legacy Sender interface.
+type Report struct {
+	Images []render.Artifact
+	Output research.Output
+	TaskID string
+}
+type ReportSender interface {
+	SupportsReport() bool
+	SendReport(context.Context, Target, Report, int) (Receipt, error)
 }
 
 // Definite errors prove no message was accepted. Other errors are ambiguous and

@@ -92,9 +92,10 @@ const answerEvidenceRules = `你是严谨的中文搜索助手。只根据 evide
 
 const answerPrompt = answerEvidenceRules + `
 输出 JSON：
-{"title":"简短标题","lead":{"text":"直接回答","evidence_ids":["e1"]},"sections":[{"heading":"要点","claims":[{"text":"一个具体结论","evidence_ids":["e1"]}]}],"uncertainties":["确实无法确认的部分"]}。
+{"answers_query":true,"title":"简短标题","lead":{"text":"直接回答","evidence_ids":["e1"]},"sections":[{"heading":"要点","claims":[{"text":"一个具体结论","evidence_ids":["e1"]}]}],"uncertainties":["确实无法确认的部分"]}。
 可选 table: {"columns":["项目","特点"],"rows":[{"cells":["A","特点"],"evidence_ids":["e1"]}]}，最多4列8行。
-标题最多50个字，全文一般300-700个中文字，最多6节每节6条。`
+标题最多50个字，最多6节每节6条。按问题需要决定长度；简介通常150–350个中文字、2–3个要点即可，不为凑字数添加资料目录或无关对比。只有用户确实需要比较时才使用 table。
+lead 必须优先回答用户所问的实体。无法回答核心问题时 answers_query=false，最多一个简短段落说明缺口，sections=[]，不输出 table，不能把无关项目或“资料未涉及”扩写成报告。`
 
 func (e *Engine) Run(ctx context.Context, query string) (Output, error) {
 	start := time.Now()
@@ -106,6 +107,9 @@ func (e *Engine) Run(ctx context.Context, query string) (Output, error) {
 		return out, ErrModelRequired
 	}
 	out.Plan = Plan{Intent: inferIntent(out.Query), Queries: []string{out.Query}, Aspects: []string{out.Query}, RequiresFresh: requiresFreshQuery(out.Query)}
+	if canonical := spacedQuery(out.Query); queryKey(canonical) != queryKey(out.Query) {
+		out.Plan.Queries = append(out.Plan.Queries, canonical)
+	}
 	t := time.Now()
 	if e.cfg.PlanWithModel && e.cfg.Model != nil {
 		var proposed Plan
@@ -129,8 +133,9 @@ func (e *Engine) Run(ctx context.Context, query string) (Output, error) {
 	t = time.Now()
 	if len(out.Evidence) == 0 {
 		var leads []hit
+		entities := queryEntities(out.Query)
 		for _, h := range hits {
-			if strings.TrimSpace(h.Snippet) != "" {
+			if strings.TrimSpace(h.Snippet) != "" && matchesEntities(h.Title+" "+h.Snippet, entities) {
 				leads = append(leads, h)
 			}
 		}

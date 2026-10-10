@@ -57,6 +57,13 @@ func (r *Runtime) Preflight(ctx context.Context, strict, online bool) Preflight 
 			add("telegram-username", "warn", "set TELEGRAM_BOT_USERNAME for /command@bot in groups")
 		}
 	}
+	if r.OneBot != nil {
+		if err := r.OneBot.Validate(); err != nil {
+			add("onebot", "fail", err.Error())
+		} else {
+			add("onebot", "pass", "HTTP API, signed webhook and bot identity configured; live gateway not verified")
+		}
+	}
 	if r.Engine.HasModel() {
 		add("model", "pass", "model configured; live quality not measured")
 	} else {

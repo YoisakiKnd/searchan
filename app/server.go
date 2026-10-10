@@ -44,6 +44,11 @@ func NewServer(r *Runtime) (*Server, error) {
 			return nil, err
 		}
 	}
+	if r.OneBot != nil {
+		if err := r.OneBot.Validate(); err != nil {
+			return nil, err
+		}
+	}
 	if err := r.validateAccess(); err != nil {
 		return nil, err
 	}
@@ -82,6 +87,21 @@ func (s *Server) Handler() http.Handler {
 				return
 			}
 			w.WriteHeader(200)
+		})
+	}
+	if s.Runtime.OneBot != nil {
+		mux.HandleFunc("POST /webhooks/onebot", func(w http.ResponseWriter, r *http.Request) {
+			event, err := s.Runtime.OneBot.DecodeWebhook(r)
+			if err != nil {
+				http.Error(w, "invalid webhook", 401)
+				return
+			}
+			if err := s.Accept(r.Context(), event); err != nil {
+				w.Header().Set("Retry-After", "2")
+				http.Error(w, "unable to accept event", 503)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		})
 	}
 	if s.Runtime.QQ != nil {
@@ -509,12 +529,31 @@ func (s *Server) process(parent context.Context, rec task.Record) {
 		return true
 	}
 	useText := len(rec.Artifacts) == 0
+	legacy := false
 	for _, d := range rec.Deliveries {
+		// Resume old per-page deliveries without duplicating them in an album.
+		if d.Kind == "image" || d.Kind == "sources" || d.Kind == "text" {
+			legacy = true
+		}
 		if d.Kind == "image" && d.Page == 1 && d.State == "failed" {
 			useText = true
 		}
+		if d.Kind == "report" && d.State == "failed" {
+			useText = true
+		}
 	}
-	if useText {
+	if reportSender, ok := sender.(platform.ReportSender); ok && reportSender.SupportsReport() && !useText && !legacy {
+		if !send("report", 0, func(seq int) (platform.Receipt, error) {
+			return reportSender.SendReport(ctx, rec.Target, platform.Report{Images: rec.Artifacts, Output: *rec.Output, TaskID: rec.ID}, seq)
+		}) {
+			if rec.State != "failed" {
+				return
+			}
+			if !fallbackText() {
+				return
+			}
+		}
+	} else if useText {
 		if !fallbackText() {
 			return
 		}
@@ -580,7 +619,7 @@ func (r *Runtime) Diagnostic() map[string]any {
 	if r.Telegram != nil {
 		result["platforms"] = append(result["platforms"].([]string), "telegram")
 	}
-	if r.QQ != nil {
+	if r.QQ != nil || r.OneBot != nil {
 		result["platforms"] = append(result["platforms"].([]string), "qq")
 	}
 	return result

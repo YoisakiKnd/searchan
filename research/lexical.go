@@ -31,10 +31,21 @@ func scanTokens(s string, visit func(string), filterStops bool) {
 		if start < 0 {
 			return
 		}
-		word := strings.ToLower(strings.Trim(s[start:end], "._-"))
+		raw := strings.Trim(s[start:end], "._-")
+		word := strings.ToLower(raw)
 		if !filterStops || !stopTerms[word] {
 			if word != "" {
 				visit(word)
+			}
+		}
+		if raw != word {
+			if parts := camelWords(raw); len(parts) > 1 {
+				for _, part := range parts {
+					part = strings.ToLower(part)
+					if !filterStops || !stopTerms[part] {
+						visit(part)
+					}
+				}
 			}
 		}
 		// Keep identifiers/versions intact, and also expose identifier parts.

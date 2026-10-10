@@ -42,3 +42,14 @@ func (r RetrySender) SendText(ctx context.Context, target Target, text string, s
 func (r RetrySender) SendImage(ctx context.Context, target Target, image render.Artifact, caption string, seq int) (Receipt, error) {
 	return retrySend(ctx, func() (Receipt, error) { return r.Next.SendImage(ctx, target, image, caption, seq) })
 }
+func (r RetrySender) SupportsReport() bool {
+	next, ok := r.Next.(ReportSender)
+	return ok && next.SupportsReport()
+}
+func (r RetrySender) SendReport(ctx context.Context, target Target, report Report, seq int) (Receipt, error) {
+	next, ok := r.Next.(ReportSender)
+	if !ok || !next.SupportsReport() {
+		return Receipt{}, &RejectedError{Code: 400}
+	}
+	return retrySend(ctx, func() (Receipt, error) { return next.SendReport(ctx, target, report, seq) })
+}

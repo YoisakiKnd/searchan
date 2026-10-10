@@ -165,6 +165,10 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 	vectors := make([]lexicalVector, 0, len(docs)*16)
 	hashes := map[string]bool{}
 	urls := map[string]bool{}
+	var entities []string
+	if len(plan.Queries) > 0 {
+		entities = queryEntities(plan.Queries[0])
+	}
 	for _, doc := range docs {
 		key := search.DocumentURL(doc.URL)
 		if key == "" || urls[key] || (doc.Hash != "" && hashes[doc.Hash]) {
@@ -179,7 +183,11 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 		for _, f := range titleVector.matches {
 			titleBoost += l.terms[f.term].weight * .12
 		}
+		docFocused := matchesEntities(doc.Title+" "+doc.URL, entities)
 		for _, p := range splitPassages(reader.Clip(doc.Text, reader.MaxText)) {
+			if !docFocused && !matchesEntities(p.text, entities) {
+				continue
+			}
 			v := l.vector(p.text, scratch)
 			items = append(items, scoredEvidence{evidence: Evidence{URL: doc.URL, Title: doc.Title, Text: p.text, DocumentHash: doc.Hash, Paragraph: p.first, ParagraphEnd: p.last, Kind: "body", PublishedAt: published[doc.URL], FetchedAt: doc.FetchedAt}, vector: v, score: titleBoost, domain: domain(doc.URL)})
 			vectors = append(vectors, v)

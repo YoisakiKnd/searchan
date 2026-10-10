@@ -54,6 +54,7 @@ type Runtime struct {
 	Senders  map[string]platform.Sender
 	Telegram *platform.Telegram
 	QQ       *platform.QQ
+	OneBot   *platform.OneBot
 	Cache    *reader.Cache
 	Clients  []*http.Client
 }
@@ -312,7 +313,20 @@ func New(getenv func(string) string) (*Runtime, error) {
 		runtime.Telegram = &platform.Telegram{Token: token, WebhookSecret: getenv("TELEGRAM_WEBHOOK_SECRET"), Username: strings.TrimPrefix(getenv("TELEGRAM_BOT_USERNAME"), "@"), Endpoint: getenv("TELEGRAM_API_ENDPOINT"), Client: serviceClient}
 		runtime.Senders["telegram"] = platform.RetrySender{Next: runtime.Telegram}
 	}
-	if id := getenv("QQ_APP_ID"); id != "" {
+	qqBackend := getenv("QQ_BACKEND")
+	if qqBackend == "" {
+		qqBackend = "official"
+	}
+	if qqBackend != "official" && qqBackend != "onebot" {
+		return nil, errors.New("QQ_BACKEND must be official or onebot")
+	}
+	if qqBackend == "onebot" {
+		runtime.OneBot = &platform.OneBot{Endpoint: getenv("ONEBOT_ENDPOINT"), AccessToken: getenv("ONEBOT_ACCESS_TOKEN"), WebhookSecret: getenv("ONEBOT_WEBHOOK_SECRET"), SelfID: getenv("ONEBOT_SELF_ID"), Client: serviceClient}
+		if err := runtime.OneBot.Validate(); err != nil {
+			return nil, err
+		}
+		runtime.Senders["qq"] = platform.RetrySender{Next: runtime.OneBot}
+	} else if id := getenv("QQ_APP_ID"); id != "" {
 		if getenv("QQ_APP_SECRET") == "" {
 			return nil, errors.New("QQ_APP_SECRET is required")
 		}
