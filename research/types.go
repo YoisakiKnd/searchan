@@ -81,6 +81,7 @@ type Stats struct {
 	SearchCalls     int              `json:"search_calls"`
 	PagesRead       int              `json:"pages_read"`
 	ModelCalls      int              `json:"model_calls"`
+	AnswerRepairs   int              `json:"answer_repairs,omitempty"`
 	ElapsedMS       int64            `json:"elapsed_ms"`
 	StageMS         map[string]int64 `json:"stage_ms"`
 	Candidates      int              `json:"candidates"`

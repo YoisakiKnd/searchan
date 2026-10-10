@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -220,7 +221,7 @@ func (f testModelFunc) Complete(ctx context.Context, prompt string, input, outpu
 }
 
 func TestAIAnswerPolicyDelivery(t *testing.T) {
-	for _, name := range []string{"missing-model", "generation-failure", "invalid-citations", "snippet-image", "snippet-text", "verification-image"} {
+	for _, name := range []string{"missing-model", "generation-failure", "invalid-citations", "snippet-image", "snippet-text", "snippet-repair-image", "verification-image"} {
 		t.Run(name, func(t *testing.T) {
 			p := &testProvider{snippetOnly: strings.HasPrefix(name, "snippet-")}
 			sender := &testSender{}
@@ -248,6 +249,22 @@ func TestAIAnswerPolicyDelivery(t *testing.T) {
 					}
 					return (testModel{}).Complete(ctx, prompt, input, output)
 				})
+			case "snippet-repair-image":
+				calls := 0
+				cfg.Model = testModelFunc(func(ctx context.Context, prompt string, input, output any) error {
+					calls++
+					if calls == 1 {
+						*output.(*research.Answer) = research.Answer{Title: "Brief", Lead: research.Claim{Text: strings.Repeat("字", 301), EvidenceIDs: []string{"e1"}}}
+						return nil
+					}
+					if calls != 2 || input.(map[string]any)["brief_correction"] == nil {
+						t.Fatal("invalid repair sequence")
+					}
+					return (testModel{}).Complete(ctx, prompt, input, output)
+				})
+				if binary := os.Getenv("SEARCHAN_TEST_TYPST"); binary != "" {
+					s.Runtime.Renderer = render.New(binary, 1)
+				}
 			}
 			e, err := research.New(cfg)
 			if err != nil {
@@ -277,6 +294,9 @@ func TestAIAnswerPolicyDelivery(t *testing.T) {
 			}
 			if stored.State != "completed" || stored.Output == nil || stored.Output.AnswerMode != "brief_summary" || len(stored.Output.Sources) == 0 || !strings.Contains(stored.Output.Text(), "关键事实待确认") {
 				t.Fatalf("short summary not delivered: %+v", stored)
+			}
+			if name == "snippet-repair-image" && (stored.Output.Stats.AnswerRepairs != 1 || stored.Output.Stats.ModelCalls != 2) {
+				t.Fatal("layout repair was not recorded")
 			}
 			if name == "snippet-text" {
 				if sender.images != 0 || len(sender.texts) != 2 || !strings.Contains(sender.texts[1], "未读取原文") {

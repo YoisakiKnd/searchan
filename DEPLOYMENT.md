@@ -84,6 +84,8 @@ sudo /opt/searchan/bin/searchan-admin model check -timeout 30s
 
 默认规划 4 秒、模型阶段 18 秒、研究 45 秒、任务 90 秒。只提高 `SEARCHAN_MODEL_TIMEOUT` 不一定增加实际可用时间，因为研究剩余额度会继续裁剪阶段 deadline。先用自检测量服务耗时，再一起调整模型与研究时间，并为 Typst 和发送留出任务额度。官方 DeepSeek 默认关闭思考；其他端点默认不附加专用思考字段，按模型文档明确配置。
 
+若机器人提示“AI 总结未通过格式或引用校验”，查看任务文件的 `error` 或执行 `sudo journalctl -u searchan --since "15 minutes ago" --no-pager`。旧版本的 `brief summary exceeds single-paragraph or 300-character limit` 合并了超字数、非空章节和表格三种情况，不能仅凭它判断是哪一种。新版本使用独立短总结提示词并为程序的限制说明预留字符；布局失败时可在原预算内修正一次，仍失败则日志会给出 `total_chars`、`max_chars`、`sections`、`has_table`。引用缺失 / 不存在的 ID、非法 JSON 和生成失败不走布局修正；不要关闭引用校验来规避错误。
+
 ## HTTPS 和 Telegram 回调
 
 使用现有反向代理，或参考 `deploy/Caddyfile.native`，把 bot.example.org 改为你的域名并按主机的 Caddy 安装方式配置。只公开 `POST /webhooks/telegram`，代理到 `127.0.0.1:8090`；health/readiness 不公开。Caddy 安装独立于 Searchan 安装器，避免覆盖已有网站配置。

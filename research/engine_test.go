@@ -184,63 +184,73 @@ func BenchmarkSelectEvidence(b *testing.B) {
 }
 
 func TestQueryCoverageAndReservedRecoveryPages(t *testing.T) {
-	var mu sync.Mutex
-	queries := map[string]bool{}
-	var ps []search.Provider
-	for i := 0; i < 6; i++ {
-		name := fmt.Sprintf("p%d", i)
-		ps = append(ps, provider{name, func(_ context.Context, r search.Request) (search.Response, error) {
-			mu.Lock()
-			queries[r.Query] = true
-			mu.Unlock()
-			var results []search.Result
-			for n := 0; n < 15; n++ {
-				results = append(results, search.Result{URL: fmt.Sprintf("https://example.org/%s/%d", r.Query, n), Title: r.Query, Content: fmt.Sprintf("Document %d. ", n) + strings.Repeat(r.Query+" reliable context reference. ", 5), ContentProvider: name})
+	for _, repair := range []bool{false, true} {
+		t.Run(fmt.Sprintf("layout_repair=%t", repair), func(t *testing.T) {
+			var mu sync.Mutex
+			queries := map[string]bool{}
+			var ps []search.Provider
+			for i := 0; i < 6; i++ {
+				name := fmt.Sprintf("p%d", i)
+				ps = append(ps, provider{name, func(_ context.Context, r search.Request) (search.Response, error) {
+					mu.Lock()
+					queries[r.Query] = true
+					mu.Unlock()
+					var results []search.Result
+					for n := 0; n < 15; n++ {
+						results = append(results, search.Result{URL: fmt.Sprintf("https://example.org/%s/%d", r.Query, n), Title: r.Query, Content: fmt.Sprintf("Document %d. ", n) + strings.Repeat(r.Query+" reliable context reference. ", 5), ContentProvider: name})
+					}
+					return search.Response{Results: results}, nil
+				}})
 			}
-			return search.Response{Results: results}, nil
-		}})
-	}
-	lm := modelFunc(func(_ context.Context, prompt string, in, out any) error {
-		switch {
-		case prompt == verifyPrompt:
-			return assign(out, `{"unsupported":["context reference needs qualification"],"missing":[]}`)
-		case strings.Contains(prompt, "制定网页搜索计划"):
-			return assign(out, `{"intent":"compare","queries":["context","cancel"],"aspects":["context","cancel"]}`)
-		case strings.Contains(prompt, "是否足以回答"):
-			return assign(out, `{"missing":["deadline"],"queries":["deadline"]}`)
-		default:
-			return assign(out, `{"title":"Go context","lead":{"text":"Context reference.","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}`)
-		}
-	})
-	e, err := New(Config{Providers: ps, Reader: readFunc(func(context.Context, string) (reader.Document, error) {
-		t.Error("provider content should suffice")
-		return reader.Document{}, nil
-	}), Model: lm, PlanWithModel: true, VerifyWithModel: true, MaxSearchCalls: 6, MaxPages: 8})
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := e.Run(context.Background(), "Go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, q := range []string{"Go", "context", "cancel", "deadline"} {
-		if !queries[q] {
-			t.Fatalf("query starved of budget: %s", q)
-		}
-	}
-	if out.Stats.SearchCalls != 6 || out.Stats.PagesRead != 8 {
-		t.Fatalf("unexpected budget: %+v", out.Stats)
-	}
-	if out.Stats.ModelCalls != 5 || out.AnswerMode != "brief_summary" || out.AnswerReason != "verification_failed" {
-		t.Fatalf("unexpected model budget or fallback: %+v", out)
-	}
-	found := false
-	for _, ev := range out.Evidence {
-		if strings.Contains(ev.URL, "deadline") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("recovery results were not read")
+			lm := modelFunc(func(_ context.Context, prompt string, in, out any) error {
+				switch {
+				case prompt == briefPrompt && repair:
+					return assign(out, `{"title":"Brief","lead":{"text":"Context reference.","evidence_ids":["e1"]},"sections":[{"heading":"Extra","claims":[]}]}`)
+				case prompt == verifyPrompt:
+					return assign(out, `{"unsupported":["context reference needs qualification"],"missing":[]}`)
+				case strings.Contains(prompt, "制定网页搜索计划"):
+					return assign(out, `{"intent":"compare","queries":["context","cancel"],"aspects":["context","cancel"]}`)
+				case strings.Contains(prompt, "是否足以回答"):
+					return assign(out, `{"missing":["deadline"],"queries":["deadline"]}`)
+				default:
+					return assign(out, `{"title":"Go context","lead":{"text":"Context reference.","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}`)
+				}
+			})
+			e, err := New(Config{Providers: ps, Reader: readFunc(func(context.Context, string) (reader.Document, error) {
+				t.Error("provider content should suffice")
+				return reader.Document{}, nil
+			}), Model: lm, PlanWithModel: true, VerifyWithModel: true, MaxSearchCalls: 6, MaxPages: 8})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := e.Run(context.Background(), "Go")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, q := range []string{"Go", "context", "cancel", "deadline"} {
+				if !queries[q] {
+					t.Fatalf("query starved of budget: %s", q)
+				}
+			}
+			if out.Stats.SearchCalls != 6 || out.Stats.PagesRead != 8 {
+				t.Fatalf("unexpected budget: %+v", out.Stats)
+			}
+			wantCalls, wantRepairs := 5, 0
+			if repair {
+				wantCalls, wantRepairs = maxModelCalls, 1
+			}
+			if out.Stats.ModelCalls != wantCalls || out.Stats.AnswerRepairs != wantRepairs || out.AnswerMode != "brief_summary" || out.AnswerReason != "verification_failed" {
+				t.Fatalf("unexpected model budget or fallback: %+v", out)
+			}
+			found := false
+			for _, ev := range out.Evidence {
+				if strings.Contains(ev.URL, "deadline") {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("recovery results were not read")
+			}
+		})
 	}
 }

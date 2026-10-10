@@ -101,7 +101,7 @@ func TestInvalidBriefSummaryFailsWithoutPublishingOriginal(t *testing.T) {
 			switch prompt {
 			case verifyPrompt:
 				return assign(output, `{"unsupported":["bad assertion"],"missing":[]}`)
-			case briefPrompt:
+			case briefPrompt, briefRepairPrompt:
 				return assign(output, invalid)
 			default:
 				return fixtureModel().Complete(context.Background(), prompt, nil, output)
