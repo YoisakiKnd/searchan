@@ -18,10 +18,11 @@
 - [安装器](scripts/install-linux.sh)、[打包脚本](scripts/package-linux.sh)、[部署指南](DEPLOYMENT.md)。
 - `dist/searchan-0.1.0-rc.1-linux-amd64.tar.gz` / `dist/searchan-0.1.0-rc.1-linux-arm64.tar.gz`。
 - `dist/SHA256SUMS-0.1.0-rc.1`；`bin/searchan` 为开发机 macOS 命令，不要拿它部署 Linux。
-- [CI](.github/workflows/check.yml) 包含 Linux 实际 systemd 安装/升级/回滚和相同检查；配置已写好，尚未远端执行。Docker 验证仅手动启用。
+- [首轮 GitHub Actions](https://github.com/YoisakiKnd/searchan/actions/runs/38012788280) 已成功，包含 Linux 实际 systemd 安装/升级/回滚、真实 Typst、漏洞扫描和双架构打包。Docker 验证仅手动启用。
+- [发布工作流](.github/workflows/release.yml) 对版本 tag 重跑检查，构建携带版本/提交信息的双架构包并上传 GitHub Releases。当前尚未推送版本 tag，不能将配置完成当作 Release 已发布。
 
 ## 等待真实环境验收
 
-用户尚未准备服务器、域名和凭据。Linux systemd 启动与资源限制、公网 TLS/Webhook、真实搜索/模型鉴权、指定 Telegram 会话的 PNG 与引用交付、手机显示、多页结果、P50/P95、峰值占用和费用，均未实测。还需在目标主机演练备份恢复、升级/回滚及磁盘告警，并建立人工标注的真实题集。
+用户尚未准备服务器、域名和凭据。Linux systemd 启动及升级/回滚已在 CI 通过；目标主机资源限制、公网 TLS/Webhook、真实搜索/模型鉴权、指定 Telegram 会话的 PNG 与引用交付、手机显示、多页结果、P50/P95、峰值占用和费用，仍未实测。还需在目标主机演练备份恢复、升级/回滚及磁盘告警，并建立人工标注的真实题集。
 
 暂存测试不改变宿主机的账号、软件包或 systemd。当前没有生产性能、真实正确率或“最佳搜索效果”的验证结论；以上外部验收通过后再记录正式上线结果。

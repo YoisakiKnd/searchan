@@ -1,0 +1,98 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+  # For retrying, select the existing tag as the workflow ref.
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      revision: ${{ steps.meta.outputs.revision }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: meta
+        run: bash scripts/release-meta.sh "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+  verify:
+    needs: metadata
+    uses: ./.github/workflows/check.yml
+    with:
+      source_ref: ${{ needs.metadata.outputs.revision }}
+  build:
+    needs: [metadata, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.metadata.outputs.revision }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: Build versioned Linux install bundles
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          REVISION: ${{ needs.metadata.outputs.revision }}
+        run: |
+          bash scripts/package-linux.sh "$VERSION"
+          cd dist
+          sha256sum --check --strict "SHA256SUMS-$VERSION"
+          task_smoke=$(mktemp -d)
+          tar -xzf "searchan-$VERSION-linux-amd64.tar.gz" -C "$task_smoke"
+          "$task_smoke/searchan-$VERSION-linux-amd64/bin/searchan" version | python3 -c 'import json,os,sys; b=json.load(sys.stdin); assert b["version"]==os.environ["VERSION"] and b["commit"]==os.environ["REVISION"] and b["os"]=="linux" and b["arch"]=="amd64"'
+          rm -rf "$task_smoke"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-bundles
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+  publish:
+    needs: [metadata, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-bundles
+          path: dist
+      - name: Publish complete assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          REVISION: ${{ needs.metadata.outputs.revision }}
+          PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+        run: |
+          cd dist
+          sha256sum --check --strict "SHA256SUMS-$VERSION"
+          cat > "$RUNNER_TEMP/release-notes.md" <<NOTES
+          Linux amd64 / arm64 安装包，由 GitHub Actions 在测试、漏洞扫描及 systemd 安装验收通过后构建。
+
+          Version: $VERSION
+          Commit: $REVISION
+
+          每个包包含 searchan、Linux 安装/管理脚本、systemd 单元、配置示例、构建信息和部署指南。
+          使用前核对 SHA256SUMS-$VERSION；另需 Typst 0.15.1、中文字体和自行配置的凭据。
+          部署步骤：https://github.com/$GH_REPO/blob/$TAG/DEPLOYMENT.md
+          NOTES
+          task_flags=()
+          if [[ "$PRERELEASE" == true ]]; then task_flags+=(--prerelease --latest=false); fi
+          gh release create "$TAG" \
+            "searchan-$VERSION-linux-amd64.tar.gz" \
+            "searchan-$VERSION-linux-arm64.tar.gz" "SHA256SUMS-$VERSION" \
+            --repo "$GH_REPO" --verify-tag --title "Searchan $TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" "${task_flags[@]}"

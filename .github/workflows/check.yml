@@ -1,7 +1,14 @@
 name: check
 on:
   push:
+    branches: ['**']
   pull_request:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact commit to validate for a release
+        type: string
+        required: true
   workflow_dispatch:
     inputs:
       docker:
@@ -13,8 +20,11 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
@@ -68,6 +78,7 @@ jobs:
         with:
           name: linux-bundles
           path: dist/
+          if-no-files-found: error
   container:
     if: github.event_name == 'workflow_dispatch' && inputs.docker
     runs-on: ubuntu-latest

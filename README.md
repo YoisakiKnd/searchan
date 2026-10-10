@@ -8,6 +8,8 @@ Telegram 首发使用 Linux + systemd，提供原生安装、升级/回滚脚本
 
 本轮检查记录与尚待真实环境验证的项目见 [RELEASE_READINESS.md](RELEASE_READINESS.md)。
 
+安装包从 [GitHub Releases](https://github.com/YoisakiKnd/searchan/releases) 下载：推送 `v*` 版本 tag 后，Actions 在测试及 Linux 安装验收通过后自动构建 amd64 / arm64 包与校验和；候选版本标记为 prerelease。普通提交只生成 Actions artifact。发布操作见 [部署指南](DEPLOYMENT.md)。
+
 ## 本地运行
 
 需要 Go ≥1.26、Typst 0.15.1 和中文字体。Linux 建议 Noto Sans CJK；macOS 模板也尝试 Heiti SC / Songti SC。只有 `golang.org/x/net` 一个直接 Go 依赖，无浏览器、Python、Redis 或数据库服务。
@@ -153,7 +155,7 @@ go test -run '^$' -bench . -benchmem ./reader ./research
 SEARCHAN_TEST_TYPST=/path/to/typst go test ./render
 ```
 
-安装器保留配置和数据，按版本保存程序与 Typst，切换失败恢复旧激活；默认独立用户运行。`--destdir` 可在临时目录暂存，不操作系统服务。本机已运行 race、实际 Typst、模拟 Telegram 上传和安装/升级/回滚暂存测试。CI 配置 Linux 实际 systemd 安装、升级和回滚、真实 Typst、Go 检查及双架构打包，不调用付费接口；尚未在远端执行。Dockerfile / Compose 保留为可选部署，容器检查仅手动启用，见 [deploy/DOCKER.md](deploy/DOCKER.md)。
+安装器保留配置和数据，按版本保存程序与 Typst，切换失败恢复旧激活；默认独立用户运行。`--destdir` 可在临时目录暂存，不操作系统服务。本机已运行 race、实际 Typst、模拟 Telegram 上传和安装/升级/回滚暂存测试；首轮 GitHub Actions 也已通过 Linux 实际 systemd 安装、升级、回滚和双架构打包，不调用付费接口。Dockerfile / Compose 保留为可选部署，容器检查仅手动启用，见 [deploy/DOCKER.md](deploy/DOCKER.md)。
 
 下一轮需扩展人工标注题集和真实接口录制，对比召回、结论正确性、引用支持率、P50/P95 和费用，再决定是否增加语义 reranker。当前没有“全网最好”或某个真实正确率的实测结论。路线与待办见 [PLAN.md](PLAN.md)。
 

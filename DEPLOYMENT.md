@@ -6,13 +6,24 @@
 
 目标环境为运行 systemd 的 Linux amd64 / arm64，推荐 Debian 12+ / Ubuntu 24.04+。需要 HTTPS 域名、Telegram Bot 凭据、模型接口及所选搜索后端，网络须可访问这些服务。80/443 对公网开放，Searchan 默认仅监听 `127.0.0.1:8090`。
 
-开发机使用 Go ≥1.26 生成两个架构的发布包：
+正式产物由 [release Actions](https://github.com/YoisakiKnd/searchan/actions/workflows/release.yml) 构建，并上传到 [GitHub Releases](https://github.com/YoisakiKnd/searchan/releases)。推送 `vMAJOR.MINOR.PATCH` 或 `vMAJOR.MINOR.PATCH-rc.N` tag 后，工作流先验证该 tag 对应的提交，再运行 race、vet、漏洞扫描、真实 Typst 和 Linux systemd 安装/升级/回滚检查，全部成功后生成两个架构的安装包及 SHA-256。`-rc.N` 等带后缀版本自动标记 prerelease，不设为 latest。
+
+维护者发布候选版本的命令如下；版本号需选择尚未使用的 tag：
+
+```sh
+git tag -a v0.1.0-rc.1 -m 'Searchan 0.1.0-rc.1'
+git push origin v0.1.0-rc.1
+```
+
+普通 main / 分支提交的编译产物保存在 check 工作流的 Actions artifact，名称 linux-bundles，不自动发布正式版本。正式 Release 包的程序版本、提交号与包内 `BUILD_INFO.json` 一致，只有 publish job 有 contents:write 权限；使用内置 GITHUB_TOKEN，无需额外 PAT 或业务凭据。手动重试可在 release 工作流选择已有 tag，或执行 `gh workflow run release.yml --ref v0.1.0-rc.1`；不接受分支作为正式发布来源，也不覆盖已存在的 Release。创建/上传中途失败若留下草稿，先核对并清理失败草稿，再重试，保留原 tag。
+
+也可在开发机使用 Go ≥1.26 生成同样结构的本地包：
 
 ```sh
 bash scripts/package-linux.sh 0.1.0-rc.1
 ```
 
-`dist/` 包含 tar.gz 和 `SHA256SUMS-0.1.0-rc.1`。传到服务器后核对校验和，选择匹配 CPU 的包解压。安装脚本需要包内的 service、管理脚本及配置示例，不要单独复制。版本目录同时保存程序与 Typst，便于一起回滚。打包不会下载或附带 Linux Typst。
+下载或打包得到 tar.gz 和 `SHA256SUMS-0.1.0-rc.1`，本地产物位于 dist/。传到服务器后核对校验和，选择匹配 CPU 的包解压。安装脚本需要包内的 service、管理脚本及配置示例，不要单独复制。版本目录同时保存程序与 Typst，便于一起回滚。安装包不附带 Linux Typst。
 
 从 [Typst 官方 v0.15.1 发布页](https://github.com/typst/typst/releases/tag/v0.15.1) 准备 `typst-x86_64-unknown-linux-musl.tar.xz` 或 `typst-aarch64-unknown-linux-musl.tar.xz`，从可信发布元数据取得 SHA-256。安装器只读取本地文件，不执行远端安装脚本。已有可信 Typst 时可以直接传 `--typst /path/to/typst`。
 
