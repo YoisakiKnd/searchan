@@ -60,15 +60,17 @@ type Source struct {
 	EvidenceIDs []string `json:"evidence_ids"`
 }
 type Output struct {
-	Query       string         `json:"query"`
-	Plan        Plan           `json:"plan"`
-	Answer      Answer         `json:"answer"`
-	Evidence    []Evidence     `json:"evidence"`
-	Sources     []Source       `json:"sources"`
-	Warnings    []string       `json:"warnings,omitempty"`
-	GeneratedAt time.Time      `json:"generated_at"`
-	Stats       Stats          `json:"stats"`
-	Retrieval   []RetrievedHit `json:"retrieval,omitempty"`
+	Query        string         `json:"query"`
+	Plan         Plan           `json:"plan"`
+	Answer       Answer         `json:"answer"`
+	AnswerMode   string         `json:"answer_mode,omitempty"`
+	AnswerReason string         `json:"answer_reason,omitempty"`
+	Evidence     []Evidence     `json:"evidence"`
+	Sources      []Source       `json:"sources"`
+	Warnings     []string       `json:"warnings,omitempty"`
+	GeneratedAt  time.Time      `json:"generated_at"`
+	Stats        Stats          `json:"stats"`
+	Retrieval    []RetrievedHit `json:"retrieval,omitempty"`
 }
 type RetrievedHit struct {
 	URL       string   `json:"url"`

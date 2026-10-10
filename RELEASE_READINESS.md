@@ -2,6 +2,8 @@
 
 2026-10-10，macOS arm64，Go 1.27.2，Typst 0.15.1，govulncheck 1.8.0。状态：可供 Linux 部署验收的候选版本，尚未实际上线。
 
+后续主分支已调整为 AI 总结优先：仅有搜索摘要或独立核验遇到问题时生成一次带限制说明的简短总结；缺少模型、生成失败、格式或引用不合法则报错，不再返回摘录。该变更已通过本地 `scripts/verify.sh`，新增短总结真实 Typst → 模拟 Telegram PNG 交付、错误回复及最多 5 次模型调用的回归检查。以下 RC.1 发布包保留原版本行为，后续变更需通过新 tag 发布。
+
 ## 已执行并通过
 
 - `scripts/verify.sh`：全项目 race / coverage、go vet、govulncheck、编译、10 题离线回归、真实中文 PNG。扫描结果：No vulnerabilities found。
@@ -19,7 +21,7 @@
 - `dist/searchan-0.1.0-rc.1-linux-amd64.tar.gz` / `dist/searchan-0.1.0-rc.1-linux-arm64.tar.gz`。
 - `dist/SHA256SUMS-0.1.0-rc.1`；`bin/searchan` 为开发机 macOS 命令，不要拿它部署 Linux。
 - [首轮 GitHub Actions](https://github.com/YoisakiKnd/searchan/actions/runs/38012788280) 已成功，包含 Linux 实际 systemd 安装/升级/回滚、真实 Typst、漏洞扫描和双架构打包。Docker 验证仅手动启用。
-- [发布工作流](.github/workflows/release.yml) 对版本 tag 重跑检查，构建携带版本/提交信息的双架构包并上传 GitHub Releases。当前尚未推送版本 tag，不能将配置完成当作 Release 已发布。
+- [RC.1 发布工作流](https://github.com/YoisakiKnd/searchan/actions/runs/38013878416) 已通过，[v0.1.0-rc.1](https://github.com/YoisakiKnd/searchan/releases/tag/v0.1.0-rc.1) 已发布，包含双架构安装包及校验和。后续主分支变更不会自动覆盖该发布包。
 
 ## 等待真实环境验收
 

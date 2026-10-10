@@ -49,7 +49,13 @@ func fixtures() ([]search.Provider, reader.Reader) {
 	return []search.Provider{p}, r
 }
 
-func TestEngineCitationsAndInvalidModelFallback(t *testing.T) {
+func fixtureModel() modelFunc {
+	return modelFunc(func(_ context.Context, _ string, _ any, out any) error {
+		return assign(out, `{"title":"Go context","lead":{"text":"Workers observe cancellation.","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}`)
+	})
+}
+
+func TestEngineCitationsAndInvalidModelError(t *testing.T) {
 	providers, r := fixtures()
 	for _, valid := range []bool{true, false} {
 		lm := modelFunc(func(ctx context.Context, s string, in, out any) error {
@@ -64,14 +70,14 @@ func TestEngineCitationsAndInvalidModelFallback(t *testing.T) {
 			t.Fatal(err)
 		}
 		out, err := e.Run(context.Background(), "Go context cancellation")
-		if err != nil {
-			t.Fatal(err)
+		if !valid {
+			if !errors.Is(err, ErrAnswerValidation) || out.Answer.Title != "" || len(out.Sources) != 0 {
+				t.Fatalf("invalid citations did not fail cleanly: %+v %v", out, err)
+			}
+			continue
 		}
-		if ValidateAnswer(out.Answer, out.Evidence) != nil || len(out.Sources) == 0 {
-			t.Fatalf("uncitable output: %+v", out)
-		}
-		if !valid && out.Answer.Title != "搜索资料摘录" {
-			t.Fatal("invalid citations were not rejected")
+		if err != nil || ValidateAnswer(out.Answer, out.Evidence) != nil || len(out.Sources) == 0 || out.AnswerMode != "summary" {
+			t.Fatalf("uncitable output: %+v %v", out, err)
 		}
 		if out.Stats.SearchCalls > 6 || out.Stats.PagesRead > 8 {
 			t.Fatal("budget exceeded")
@@ -100,7 +106,7 @@ func TestEngineGlobalConcurrencyAndCancellation(t *testing.T) {
 	e, _ := New(Config{Providers: []search.Provider{p}, Reader: readFunc(func(context.Context, string) (reader.Document, error) {
 		t.Error("unexpected read")
 		return reader.Document{}, nil
-	}), MaxSearchCalls: 1, SearchConcurrency: 2})
+	}), Model: fixtureModel(), MaxSearchCalls: 1, SearchConcurrency: 2})
 	var wg sync.WaitGroup
 	for i := 0; i < 12; i++ {
 		wg.Add(1)
@@ -130,20 +136,22 @@ func TestEngineSnippetFallbackAndAllFailure(t *testing.T) {
 	r := readFunc(func(context.Context, string) (reader.Document, error) {
 		return reader.Document{}, errors.New("blocked")
 	})
-	lm := modelFunc(func(context.Context, string, any, any) error {
-		t.Fatal("must not synthesize snippets as read evidence")
-		return nil
+	lm := modelFunc(func(_ context.Context, prompt string, input, output any) error {
+		if prompt != briefPrompt || input.(map[string]any)["reason"] != "snippets_only" {
+			t.Fatal("snippet was not explicitly identified for brief summarization")
+		}
+		return assign(output, `{"title":"搜索简报","lead":{"text":"搜索摘要显示一个可能线索，尚不能确认结论。","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}`)
 	})
 	e, _ := New(Config{Providers: []search.Provider{p}, Reader: r, Model: lm})
 	out, err := e.Run(context.Background(), "query")
-	if err != nil || out.Evidence[0].Kind != "snippet" || len(out.Answer.Uncertainties) < 2 {
+	if err != nil || out.Evidence[0].Kind != "snippet" || len(out.Answer.Uncertainties) == 0 || out.AnswerMode != "brief_summary" || !strings.Contains(out.Text(), "未读取原文") {
 		t.Fatalf("bad snippet fallback: %+v %v", out, err)
 	}
 	p.fn = func(context.Context, search.Request) (search.Response, error) {
 		return search.Response{}, errors.New("failure")
 	}
-	e, _ = New(Config{Providers: []search.Provider{p}, Reader: r})
-	if _, err := e.Run(context.Background(), "query"); err == nil {
+	e, _ = New(Config{Providers: []search.Provider{p}, Reader: r, Model: lm})
+	if _, err := e.Run(context.Background(), "query"); !errors.Is(err, ErrNoEvidence) {
 		t.Fatal("all failures were hidden")
 	}
 }
@@ -194,6 +202,8 @@ func TestQueryCoverageAndReservedRecoveryPages(t *testing.T) {
 	}
 	lm := modelFunc(func(_ context.Context, prompt string, in, out any) error {
 		switch {
+		case prompt == verifyPrompt:
+			return assign(out, `{"unsupported":["context reference needs qualification"],"missing":[]}`)
 		case strings.Contains(prompt, "制定网页搜索计划"):
 			return assign(out, `{"intent":"compare","queries":["context","cancel"],"aspects":["context","cancel"]}`)
 		case strings.Contains(prompt, "是否足以回答"):
@@ -205,7 +215,7 @@ func TestQueryCoverageAndReservedRecoveryPages(t *testing.T) {
 	e, err := New(Config{Providers: ps, Reader: readFunc(func(context.Context, string) (reader.Document, error) {
 		t.Error("provider content should suffice")
 		return reader.Document{}, nil
-	}), Model: lm, PlanWithModel: true, MaxSearchCalls: 6, MaxPages: 8})
+	}), Model: lm, PlanWithModel: true, VerifyWithModel: true, MaxSearchCalls: 6, MaxPages: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,6 +231,9 @@ func TestQueryCoverageAndReservedRecoveryPages(t *testing.T) {
 	if out.Stats.SearchCalls != 6 || out.Stats.PagesRead != 8 {
 		t.Fatalf("unexpected budget: %+v", out.Stats)
 	}
+	if out.Stats.ModelCalls != 5 || out.AnswerMode != "brief_summary" || out.AnswerReason != "verification_failed" {
+		t.Fatalf("unexpected model budget or fallback: %+v", out)
+	}
 	found := false
 	for _, ev := range out.Evidence {
 		if strings.Contains(ev.URL, "deadline") {
@@ -229,25 +242,5 @@ func TestQueryCoverageAndReservedRecoveryPages(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("recovery results were not read")
-	}
-}
-
-func TestUnsupportedRepairMustPassSecondVerification(t *testing.T) {
-	ps, r := fixtures()
-	calls := 0
-	lm := modelFunc(func(_ context.Context, prompt string, in, out any) error {
-		calls++
-		if strings.Contains(prompt, `"unsupported"`) {
-			return assign(out, `{"unsupported":["unsupported assertion"],"missing":[]}`)
-		}
-		return assign(out, `{"title":"unsupported","lead":{"text":"Unsupported conclusion","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}`)
-	})
-	e, _ := New(Config{Providers: ps, Reader: r, Model: lm, VerifyWithModel: true})
-	out, err := e.Run(context.Background(), "Go context")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Answer.Title != "搜索资料摘录" || calls != 4 {
-		t.Fatalf("unchecked repair escaped: title=%s calls=%d", out.Answer.Title, calls)
 	}
 }

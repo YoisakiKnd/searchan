@@ -22,9 +22,11 @@ import (
 type pausedRenderer struct {
 	next             render.Renderer
 	started, release chan struct{}
+	output           research.Output
 }
 
 func (r *pausedRenderer) Render(ctx context.Context, id string, output research.Output, path string) ([]render.Artifact, error) {
+	r.output = output
 	close(r.started)
 	select {
 	case <-r.release:
@@ -35,6 +37,16 @@ func (r *pausedRenderer) Render(ctx context.Context, id string, output research.
 }
 
 func TestTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T) {
+	for _, snippetOnly := range []bool{false, true} {
+		name := "full-summary"
+		if snippetOnly {
+			name = "brief-summary"
+		}
+		t.Run(name, func(t *testing.T) { testTelegramWebhookRealPNGAndGracefulShutdown(t, snippetOnly) })
+	}
+}
+
+func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, snippetOnly bool) {
 	binary := os.Getenv("SEARCHAN_TEST_TYPST")
 	if binary == "" {
 		t.Skip("set SEARCHAN_TEST_TYPST for actual Typst end-to-end test")
@@ -68,7 +80,7 @@ func TestTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T) {
 		fmt.Fprint(w, `{"ok":true,"result":{"message_id":123}}`)
 	}))
 	defer api.Close()
-	p := &testProvider{}
+	p := &testProvider{snippetOnly: snippetOnly}
 	s, _ := setup(t, p, &testSender{}, testRenderer{})
 	bot := &platform.Telegram{Token: "test-token", WebhookSecret: strings.Repeat("s", 32), Username: "searchan_test_bot", Endpoint: api.URL, Client: api.Client()}
 	s.Runtime.Telegram = bot
@@ -134,5 +146,8 @@ func TestTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T) {
 	}
 	if images.Load() != 1 || texts.Load() != 2 || p.calls.Load() != 1 {
 		t.Fatalf("images=%d texts=%d searches=%d", images.Load(), texts.Load(), p.calls.Load())
+	}
+	if snippetOnly && (renderer.output.AnswerMode != "brief_summary" || !strings.Contains(renderer.output.Text(), "未读取原文")) {
+		t.Fatal("brief summary or limitation did not reach the real Typst renderer")
 	}
 }

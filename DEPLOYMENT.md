@@ -70,7 +70,7 @@ sudo /opt/searchan/bin/searchan-admin version
 sudo journalctl -u searchan -n 100
 ```
 
-searchan-admin 通过 systemd 临时单元，以服务账号和相同环境执行管理命令，不通过 shell 加载密钥。严格预检只验证本地，不调用付费搜索或模型，不证明真实密钥有效。
+searchan-admin 通过 systemd 临时单元，以服务账号和相同环境执行管理命令，不通过 shell 加载密钥。严格预检只验证本地，不调用付费搜索或模型，不证明真实密钥有效。AI 总结为必需功能，普通 doctor 也会拒绝缺少模型配置；仅有搜索摘要或核验遇到问题时返回带限制说明的短总结，生成及引用校验失败会明确报错。
 
 ## HTTPS 和 Telegram 回调
 

@@ -103,7 +103,7 @@ func TestRecoveryUsesUnusedProviderAndUnreadInitialHits(t *testing.T) {
 			return search.Response{Results: []search.Result{{URL: "https://good.example/", Title: "Go context", Content: strings.Repeat("Go context supports bounded cancellation. ", 3)}}}, nil
 		}})
 	}
-	e, _ := New(Config{Providers: ps, Reader: readFunc(func(context.Context, string) (reader.Document, error) { return reader.Document{}, nil }), MaxSearchCalls: 6})
+	e, _ := New(Config{Providers: ps, Reader: readFunc(func(context.Context, string) (reader.Document, error) { return reader.Document{}, nil }), Model: fixtureModel(), MaxSearchCalls: 6})
 	out, err := e.Run(context.Background(), "Go context")
 	if err != nil || len(out.Evidence) == 0 || calls["p4"] != 1 || calls["p0"] != 1 {
 		t.Fatalf("recovery repeated broken providers: calls=%v err=%v", calls, err)
@@ -126,7 +126,7 @@ func TestRecoveryUsesUnusedProviderAndUnreadInitialHits(t *testing.T) {
 		}
 		return reader.MakeDocument(u, "Go context", strings.Repeat("Go context readable reference ", 5)+u, "fixture"), nil
 	})
-	e, _ = New(Config{Providers: []search.Provider{p}, Reader: r, MaxPages: 8, MaxSearchCalls: 2})
+	e, _ = New(Config{Providers: []search.Provider{p}, Reader: r, Model: fixtureModel(), MaxPages: 8, MaxSearchCalls: 2})
 	out, err = e.Run(context.Background(), "Go context")
 	if err != nil || out.Stats.Documents != 2 || out.Stats.PagesRead != 8 {
 		t.Fatalf("unread initial hits lost: %+v %v", out.Stats, err)
@@ -181,7 +181,7 @@ func TestRecentQuestionRefreshesInsteadOfTrustingProviderBody(t *testing.T) {
 	p := provider{"fixture", func(context.Context, search.Request) (search.Response, error) {
 		return search.Response{Results: []search.Result{{URL: "https://news.example/", Title: "Latest release", Content: strings.Repeat("Old cached body. ", 10)}}}, nil
 	}}
-	e, _ := New(Config{Providers: []search.Provider{p}, Reader: r})
+	e, _ := New(Config{Providers: []search.Provider{p}, Reader: r, Model: fixtureModel()})
 	out, err := e.Run(context.Background(), "latest release")
 	if err != nil || r.fresh.Load() != 1 || r.normal.Load() != 0 || !strings.Contains(out.Evidence[0].Text, "newly read") {
 		t.Fatalf("stale material used as current: %+v %v", out, err)

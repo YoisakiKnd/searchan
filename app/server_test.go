@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -19,9 +20,10 @@ import (
 )
 
 type testProvider struct {
-	calls   atomic.Int32
-	started chan struct{}
-	block   bool
+	calls       atomic.Int32
+	started     chan struct{}
+	block       bool
+	snippetOnly bool
 }
 
 func (p *testProvider) Name() string { return "fixture" }
@@ -31,6 +33,9 @@ func (p *testProvider) Search(ctx context.Context, _ search.Request) (search.Res
 		close(p.started)
 		<-ctx.Done()
 		return search.Response{}, ctx.Err()
+	}
+	if p.snippetOnly {
+		return search.Response{Results: []search.Result{{URL: "https://go.dev/doc/", Title: "Go context", Snippet: "Go context cancellation propagates to workers."}}}, nil
 	}
 	return search.Response{Results: []search.Result{{URL: "https://go.dev/doc/", Title: "Go context", Content: strings.Repeat("Go context cancellation propagates to workers. ", 5), ContentProvider: "fixture"}}}, nil
 }
@@ -72,7 +77,7 @@ func (s *testSender) SendImage(_ context.Context, _ platform.Target, _ render.Ar
 }
 func setup(t *testing.T, p *testProvider, sender *testSender, renderer testRenderer) (*Server, platform.Event) {
 	t.Helper()
-	e, err := research.New(research.Config{Providers: []search.Provider{p}, Reader: unusedReader{}, MaxSearchCalls: 1})
+	e, err := research.New(research.Config{Providers: []search.Provider{p}, Reader: unusedReader{}, Model: testModel{}, MaxSearchCalls: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,5 +199,92 @@ func TestRecoveryAfterFailureReplyDoesNotRepeatSearch(t *testing.T) {
 	stored, _ := s.Store.Get(r.ID)
 	if p.calls.Load() != 0 || stored.State != "failed" {
 		t.Fatalf("repeated failed research: state=%s calls=%d", stored.State, p.calls.Load())
+	}
+}
+
+// testModel supplies a cited AI answer; tests no longer depend on an extractive fallback.
+type testModel struct{ err error }
+
+func (m testModel) Complete(_ context.Context, _ string, _ any, output any) error {
+	if m.err != nil {
+		return m.err
+	}
+	*output.(*research.Answer) = research.Answer{Title: "Go context", Lead: research.Claim{Text: "Workers observe cancellation.", EvidenceIDs: []string{"e1"}}}
+	return nil
+}
+
+type testModelFunc func(context.Context, string, any, any) error
+
+func (f testModelFunc) Complete(ctx context.Context, prompt string, input, output any) error {
+	return f(ctx, prompt, input, output)
+}
+
+func TestAIAnswerPolicyDelivery(t *testing.T) {
+	for _, name := range []string{"missing-model", "generation-failure", "invalid-citations", "snippet-image", "snippet-text", "verification-image"} {
+		t.Run(name, func(t *testing.T) {
+			p := &testProvider{snippetOnly: strings.HasPrefix(name, "snippet-")}
+			sender := &testSender{}
+			s, event := setup(t, p, sender, testRenderer{fail: name == "snippet-text"})
+			cfg := research.Config{Providers: []search.Provider{p}, Reader: unusedReader{}, Model: testModel{}, MaxSearchCalls: 1}
+			wantFailure := ""
+			switch name {
+			case "missing-model":
+				cfg.Model = nil
+				wantFailure = "未配置模型"
+			case "generation-failure":
+				cfg.Model = testModel{err: errors.New("private-upstream-credential")}
+				wantFailure = "AI 总结生成失败"
+			case "invalid-citations":
+				cfg.Model = testModelFunc(func(_ context.Context, _ string, _ any, output any) error {
+					*output.(*research.Answer) = research.Answer{Title: "Bad", Lead: research.Claim{Text: "Unsupported", EvidenceIDs: []string{"invented"}}}
+					return nil
+				})
+				wantFailure = "未通过格式或引用校验"
+			case "verification-image":
+				cfg.VerifyWithModel = true
+				cfg.Model = testModelFunc(func(ctx context.Context, prompt string, input, output any) error {
+					if strings.HasPrefix(prompt, "核对 answer") {
+						return json.Unmarshal([]byte(`{"unsupported":["bad assertion"],"missing":[]}`), output)
+					}
+					return (testModel{}).Complete(ctx, prompt, input, output)
+				})
+			}
+			e, err := research.New(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.Runtime.Engine = e
+			if err := s.Accept(context.Background(), event); err != nil {
+				t.Fatal(err)
+			}
+			rec, ok, err := s.Store.Claim()
+			if err != nil || !ok {
+				t.Fatal("no queued task", err)
+			}
+			s.process(context.Background(), rec)
+			stored, err := s.Store.Get(rec.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wantFailure != "" {
+				if stored.State != "failed" || stored.Output != nil || sender.images != 0 || len(sender.texts) != 2 || !strings.Contains(sender.texts[1], wantFailure) || strings.Contains(sender.texts[1], "private-upstream") {
+					t.Fatalf("failed AI request delivered output: %+v texts=%v images=%d", stored, sender.texts, sender.images)
+				}
+				if name == "missing-model" && p.calls.Load() != 0 {
+					t.Fatal("searched despite missing model")
+				}
+				return
+			}
+			if stored.State != "completed" || stored.Output == nil || stored.Output.AnswerMode != "brief_summary" || len(stored.Output.Sources) == 0 || !strings.Contains(stored.Output.Text(), "关键事实待确认") {
+				t.Fatalf("short summary not delivered: %+v", stored)
+			}
+			if name == "snippet-text" {
+				if sender.images != 0 || len(sender.texts) != 2 || !strings.Contains(sender.texts[1], "未读取原文") {
+					t.Fatalf("short text fallback missing notice: %v", sender.texts)
+				}
+			} else if sender.images != 1 || len(sender.texts) != 2 {
+				t.Fatal("short summary did not use image delivery")
+			}
+		})
 	}
 }

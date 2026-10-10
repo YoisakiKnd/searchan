@@ -450,7 +450,7 @@ func (s *Server) process(parent context.Context, rec task.Record) {
 		}
 		slog.Error("task failed", "task", rec.ID, "error", err)
 		if ctx.Err() == nil && send("failure", 0, func(seq int) (platform.Receipt, error) {
-			return sender.SendText(ctx, rec.Target, "本次搜索未能完成。任务："+rec.ID+"\n/status "+rec.ID, seq)
+			return sender.SendText(ctx, rec.Target, research.FailureMessage(err)+"\n任务："+rec.ID+"\n/status "+rec.ID, seq)
 		}) {
 			rec.State = "failed"
 			_ = s.Store.Save(rec)

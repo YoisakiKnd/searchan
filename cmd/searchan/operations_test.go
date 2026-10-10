@@ -87,8 +87,10 @@ func TestStrictDoctorUsesRealLocalRenderWithoutOnlineCalls(t *testing.T) {
 	}
 	delete(env, "MODEL_ENDPOINT")
 	delete(env, "MODEL_NAME")
-	out.Reset()
-	if err := run(context.Background(), []string{"doctor", "-strict"}, &out, func(k string) string { return env[k] }); err == nil {
-		t.Fatal("strict doctor accepted extractive-only mode")
+	for _, args := range [][]string{{"doctor", "-strict"}, {"doctor"}} {
+		out.Reset()
+		if err := run(context.Background(), args, &out, func(k string) string { return env[k] }); err == nil || !strings.Contains(out.String(), "model required") {
+			t.Fatal("doctor accepted missing model", out.String())
+		}
 	}
 }

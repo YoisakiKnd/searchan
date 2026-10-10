@@ -167,7 +167,7 @@ func TestSnippetFallbackFiltersEmptyLeadsBeforeRanking(t *testing.T) {
 	}}
 	e, _ := New(Config{Providers: []search.Provider{p}, Reader: readFunc(func(context.Context, string) (reader.Document, error) {
 		return reader.Document{}, errors.New("blocked")
-	})})
+	}), Model: fixtureModel()})
 	out, err := e.Run(context.Background(), "Go cancellation")
 	if err != nil || len(out.Evidence) != 1 || out.Evidence[0].Kind != "snippet" || out.Evidence[0].URL != "https://reference.example/" {
 		t.Fatalf("usable lead behind empty snippets lost: %+v %v", out.Evidence, err)

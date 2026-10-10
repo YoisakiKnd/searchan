@@ -60,11 +60,7 @@ func (r *Runtime) Preflight(ctx context.Context, strict, online bool) Preflight 
 	if r.Engine.HasModel() {
 		add("model", "pass", "model configured; live quality not measured")
 	} else {
-		status := "warn"
-		if strict {
-			status = "fail"
-		}
-		add("model", status, "extractive mode only; configure a model for synthesized answers")
+		add("model", "fail", "model required for AI summaries; configure MODEL_ENDPOINT and MODEL_NAME")
 	}
 	if !r.Config.VerifyWithModel {
 		status := "warn"
