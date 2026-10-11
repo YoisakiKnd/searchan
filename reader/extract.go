@@ -14,12 +14,16 @@ import (
 // textSink collapses HTML whitespace without inventing spaces at inline tag
 // boundaries. Builders and pending separators stay bounded independently.
 type textSink struct {
-	b       strings.Builder
-	limit   int
-	pending string
+	b         strings.Builder
+	limit     int
+	pending   string
+	truncated bool
 }
 
 func (s *textSink) append(raw []byte) {
+	if len(raw) > s.limit-s.b.Len() {
+		s.truncated = true
+	}
 	n := min(len(raw), s.limit-s.b.Len())
 	for n > 0 && n < len(raw) && !utf8.RuneStart(raw[n]) {
 		n--
@@ -41,6 +45,7 @@ func (s *textSink) flush() {
 }
 func (s *textSink) text(raw []byte, pre bool) {
 	if s.b.Len() >= s.limit {
+		s.truncated = s.truncated || len(raw) > 0
 		return
 	}
 	if pre {
@@ -70,15 +75,21 @@ func htmlSpace(b byte) bool { return b <= ' ' && (b == ' ' || b >= '\t' && b <= 
 // Extract streams tokens without a DOM. Inline identifiers, preformatted code
 // and table cell boundaries survive; hidden/navigation trees are excluded.
 func Extract(r io.Reader) (string, string, error) {
+	title, text, _, err := extract(r)
+	return title, text, err
+}
+
+func extract(r io.Reader) (string, string, bool, error) {
 	z := html.NewTokenizer(r)
 	z.SetMaxBuf(256 << 10)
 	all, main, title := textSink{limit: MaxText}, textSink{limit: MaxText}, textSink{limit: 512}
 	type frame struct {
-		tag                    string
-		skip, main, title, pre bool
+		tag                                   string
+		skip, main, body, article, title, pre bool
 	}
 	stack := make([]frame, 0, 32)
-	skip, primary, inTitle, pre := 0, 0, 0, 0
+	skip, primary, inBody, inArticle, inTitle, pre := 0, 0, 0, 0, 0, 0
+	selected := 0
 	pop := func(i int) {
 		for _, f := range stack[i:] {
 			if f.skip {
@@ -86,6 +97,12 @@ func Extract(r io.Reader) (string, string, error) {
 			}
 			if f.main {
 				primary--
+			}
+			if f.body {
+				inBody--
+			}
+			if f.article {
+				inArticle--
 			}
 			if f.title {
 				inTitle--
@@ -109,24 +126,31 @@ func Extract(r io.Reader) (string, string, error) {
 		switch tt {
 		case html.ErrorToken:
 			if z.Err() != io.EOF {
-				return "", "", fmt.Errorf("HTML tokenization: %w", z.Err())
+				return "", "", false, fmt.Errorf("HTML tokenization: %w", z.Err())
 			}
 			text := strings.TrimSpace(all.b.String())
+			truncated := all.truncated
 			if strings.TrimSpace(main.b.String()) != "" {
 				text = strings.TrimSpace(main.b.String())
+				truncated = main.truncated
 			}
-			return strings.TrimSpace(title.b.String()), text, nil
+			return strings.TrimSpace(title.b.String()), text, truncated, nil
 		case html.StartTagToken, html.SelfClosingTagToken:
 			name, more := z.TagName()
 			tag := atom.Lookup(name).String()
 			if tag == "" {
 				tag = string(name)
 			}
-			f := frame{tag: tag, skip: skipTag(tag) || tag == "header" && primary == 0, main: tag == "main" || tag == "article", title: tag == "title", pre: tag == "pre"}
+			f := frame{tag: tag, skip: skipTag(tag) || tag == "header" && primary == 0, main: tag == "main" || tag == "article", article: tag == "article", title: tag == "title", pre: tag == "pre"}
 			for more {
 				key, val, next := z.TagAttr()
 				more = next
 				switch string(key) {
+				case "id", "class", "itemprop":
+					body, excluded := contentAttributes(tag, string(key), string(val))
+					f.body = f.body || body
+					f.main = f.main || body
+					f.skip = f.skip || excluded
 				case "hidden":
 					f.skip = true
 				case "aria-hidden":
@@ -164,7 +188,7 @@ func Extract(r io.Reader) (string, string, error) {
 			}
 			if tt != html.SelfClosingTagToken && !voidTag(tag) {
 				if len(stack) >= 512 {
-					return "", "", errors.New("HTML nesting limit exceeded")
+					return "", "", false, errors.New("HTML nesting limit exceeded")
 				}
 				stack = append(stack, f)
 				if f.skip {
@@ -173,11 +197,22 @@ func Extract(r io.Reader) (string, string, error) {
 				if f.main {
 					primary++
 				}
+				if f.body {
+					inBody++
+				}
+				if f.article {
+					inArticle++
+				}
 				if f.title {
 					inTitle++
 				}
 				if f.pre {
 					pre++
+				}
+				if tag == "script" || tag == "style" {
+					// Large inline assets are not evidence. Permit a bounded raw
+					// token here so a site's CSS cannot discard a useful page.
+					z.SetMaxBuf(MaxBody + 1)
 				}
 			}
 		case html.EndTagToken:
@@ -192,14 +227,35 @@ func Extract(r io.Reader) (string, string, error) {
 					break
 				}
 			}
+			if tag == "script" || tag == "style" {
+				z.SetMaxBuf(256 << 10)
+			}
 		case html.TextToken:
+			if skip > 0 && inTitle == 0 {
+				continue // Do not unescape or copy discarded assets/widgets.
+			}
 			raw := z.Text()
 			if inTitle > 0 {
 				title.text(raw, false)
 			}
 			if skip == 0 && inTitle == 0 {
 				if primary > 0 {
-					main.text(raw, pre > 0)
+					level := 1 // main/role=main
+					if inArticle > 0 {
+						level = 2
+					}
+					if inBody > 0 {
+						level = 3
+					}
+					if level > selected && strings.TrimSpace(string(raw)) != "" {
+						// Prefer explicit prose over page chrome or card articles.
+						// Only one primary builder survives a promotion.
+						main = textSink{limit: MaxText}
+						selected = level
+					}
+					if level >= selected {
+						main.text(raw, pre > 0)
+					}
 				} else if main.b.Len() == 0 {
 					// Once explicit primary text exists, the fallback builder can
 					// never be selected. Avoid scanning and storing that text twice.

@@ -93,7 +93,7 @@ func TestNonAnswerDoesNotBecomeLongReport(t *testing.T) {
 		t.Run(stage, func(t *testing.T) {
 			providers, r := fixtures()
 			m := modelFunc(func(ctx context.Context, prompt string, input, output any) error {
-				if prompt == answerPrompt && stage == "generation" {
+				if (prompt == answerPrompt || prompt == introductionPrompt) && stage == "generation" {
 					return assign(output, `{"answers_query":false,"title":"资料不足","lead":{"text":"目录没有回答问题。","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}`)
 				}
 				if prompt == verifyPrompt {

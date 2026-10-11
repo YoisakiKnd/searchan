@@ -28,6 +28,7 @@ type Document struct {
 	FetchedAt time.Time `json:"fetched_at"`
 	Hash      string    `json:"hash"`
 	Method    string    `json:"method"`
+	Truncated bool      `json:"truncated,omitempty"`
 }
 
 type Reader interface {
@@ -151,14 +152,16 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 	}
 	lr := &io.LimitedReader{R: res.Body, N: MaxBody + 1}
 	var title, text string
+	var truncated bool
 	if strings.Contains(ct, "text/plain") {
 		data, readErr := io.ReadAll(io.LimitReader(lr, MaxText+1))
 		if readErr != nil {
 			return Document{}, readErr
 		}
 		text = Clip(strings.TrimSpace(string(data)), MaxText)
+		truncated = len(data) > MaxText
 	} else {
-		title, text, err = Extract(lr)
+		title, text, truncated, err = extract(lr)
 		if err != nil {
 			return Document{}, err
 		}
@@ -166,25 +169,22 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 	if lr.N <= 0 {
 		return Document{}, errors.New("page exceeds 2 MiB")
 	}
-	if !utf8.ValidString(text) {
-		return Document{}, errors.New("page text is not UTF-8; use an alternate reader")
+	if err := CheckContent(title, text); err != nil {
+		return Document{}, err
 	}
 	if utf8.RuneCountInString(text) < 40 {
-		return Document{}, errors.New("page has insufficient readable text")
+		return Document{}, ContentError("insufficient_text")
 	}
-	lower := strings.ToLower(title)
-	for _, s := range []string{"just a moment", "access denied", "captcha", "verify you are human"} {
-		if strings.Contains(lower, s) {
-			return Document{}, errors.New("page is a challenge or access-denied page")
-		}
-	}
-	return MakeDocument(res.Request.URL.String(), title, text, "http"), nil
+	doc := MakeDocument(res.Request.URL.String(), title, text, "http")
+	doc.Truncated = truncated
+	return doc, nil
 }
 
 func MakeDocument(raw, title, text, method string) Document {
+	truncated := len(text) > MaxText
 	text = Clip(text, MaxText)
 	hash := sha256.Sum256([]byte(text))
-	return Document{URL: raw, Title: Clip(title, 512), Text: text, FetchedAt: time.Now().UTC(), Hash: hex.EncodeToString(hash[:]), Method: method}
+	return Document{URL: raw, Title: Clip(title, 512), Text: text, FetchedAt: time.Now().UTC(), Hash: hex.EncodeToString(hash[:]), Method: method, Truncated: truncated}
 }
 
 func Clip(s string, n int) string {
@@ -229,8 +229,11 @@ func (r *Jina) Read(ctx context.Context, raw string) (Document, error) {
 	if wire.Code != 0 && wire.Code != 200 {
 		return Document{}, errors.New("Jina Reader application error")
 	}
+	if err := CheckContent(wire.Data.Title, wire.Data.Content); err != nil {
+		return Document{}, err
+	}
 	if len(wire.Data.Content) < 40 {
-		return Document{}, errors.New("Jina Reader returned insufficient text")
+		return Document{}, ContentError("insufficient_text")
 	}
 	if wire.Data.URL == "" {
 		wire.Data.URL = raw

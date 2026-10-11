@@ -186,6 +186,7 @@ func (s *retrieval) search(ctx context.Context, queries []string, budget int) []
 					if old.Content == "" && result.Content != "" {
 						old.Content = result.Content
 						old.ContentProvider = result.ContentProvider
+						old.ContentTruncated = result.ContentTruncated
 					}
 					if old.PublishedAt == "" {
 						old.PublishedAt = result.PublishedAt

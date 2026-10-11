@@ -189,7 +189,7 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 				continue
 			}
 			v := l.vector(p.text, scratch)
-			items = append(items, scoredEvidence{evidence: Evidence{URL: doc.URL, Title: doc.Title, Text: p.text, DocumentHash: doc.Hash, Paragraph: p.first, ParagraphEnd: p.last, Kind: "body", PublishedAt: published[doc.URL], FetchedAt: doc.FetchedAt}, vector: v, score: titleBoost, domain: domain(doc.URL)})
+			items = append(items, scoredEvidence{evidence: Evidence{URL: doc.URL, Title: doc.Title, Text: p.text, DocumentHash: doc.Hash, Paragraph: p.first, ParagraphEnd: p.last, Kind: "body", PublishedAt: published[doc.URL], FetchedAt: doc.FetchedAt, ReadMethod: reader.Clip(doc.Method, 64), Truncated: doc.Truncated}, vector: v, score: titleBoost, domain: domain(doc.URL)})
 			vectors = append(vectors, v)
 		}
 	}

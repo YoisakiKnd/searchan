@@ -41,3 +41,69 @@ func TestExtractOptionalEndTagsAndNestedLists(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractSeparatesNestedWidgetsFromProse(t *testing.T) {
+	raw := `<main><h1>Page chrome</h1><article><div class="article-content"><h2>Repository guide</h2>
+<p>正文讨论相关推荐组件：推荐算法不是数据库功能。</p>
+<div class="article-recommend-card"><article><h2>Unrelated Solr preview</h2><div class="article-content">Wrong module status.</div></article></div>
+<section class="comment-box"><p>Wrong commenter claim.</p></section>
+<p class="recommendation">推荐阅读原文；这是作者的正文建议。</p>
+<div class="recommendation-analysis">Normal analysis stays.</div>
+<pre><code><span class="comment">// recommended posts are optional</span>
+repo.FindByName("Ada")</code></pre>
+<table><tr><th>Module</th><th>Use</th></tr><tr><td>JPA</td><td>Persistence</td></tr></table>
+<p>Important final condition.</p></div></article><div class="recommend-box">Other preview.</div></main>`
+	_, text, err := Extract(strings.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Repository guide", "正文讨论相关推荐组件", "推荐阅读原文", "Normal analysis stays.", "// recommended posts are optional\nrepo.FindByName(\"Ada\")", "Module\tUse", "JPA\tPersistence", "Important final condition."} {
+		if !strings.Contains(text, want) {
+			t.Errorf("lost prose %q in %q", want, text)
+		}
+	}
+	for _, noise := range []string{"Page chrome", "Unrelated Solr", "Wrong module", "Wrong commenter", "Other preview"} {
+		if strings.Contains(text, noise) {
+			t.Errorf("widget leaked: %q", text)
+		}
+	}
+}
+
+func TestExtractPrefersExplicitBodyWithoutRequiringOne(t *testing.T) {
+	for _, container := range []string{`id="content_views"`, `class="blogpost-body cnblogs-markdown"`, `itemprop="articleBody"`, `class="markdown content"`} {
+		raw := `<div>Global links</div><article>Earlier promo.</article><div ` + container + `><p>Short definition.</p></div><article>Later promo.</article>`
+		_, text, err := Extract(strings.NewReader(raw))
+		if err != nil || text != "Short definition." {
+			t.Fatalf("explicit body %s: %q %v", container, text, err)
+		}
+	}
+	for _, raw := range []string{
+		`<main>Useful fallback.<div class="article-content" hidden>Hidden fake.</div></main>`,
+		`<main>Useful fallback.<div class="article-content">  </div></main>`,
+		`<p>Useful fallback.</p>`,
+	} {
+		_, text, err := Extract(strings.NewReader(raw))
+		if err != nil || text != "Useful fallback." {
+			t.Fatalf("fallback lost: %q %v", text, err)
+		}
+	}
+}
+
+func TestExtractLargeDiscardedAssetsRemainBounded(t *testing.T) {
+	for _, tag := range []string{"style", "script"} {
+		raw := `<head><title>Reference</title><` + tag + `>` + strings.Repeat("x", 340<<10) + `</` + tag + `></head><div class="markdown content">Short useful definition.</div>`
+		title, text, err := Extract(strings.NewReader(raw))
+		if err != nil || title != "Reference" || text != "Short useful definition." {
+			t.Fatalf("asset discarded page: %s %q %q %v", tag, title, text, err)
+		}
+	}
+	for _, raw := range []string{
+		`<style>` + strings.Repeat("x", MaxBody+2) + `</style>`,
+		`<style>small</style><p>` + strings.Repeat("x", 300<<10) + `</p>`,
+		`<div title="` + strings.Repeat("x", 300<<10) + `">Short.</div>`,
+	} {
+		if _, _, err := Extract(strings.NewReader(raw)); err == nil {
+			t.Fatal("token bound bypassed")
+		}
+	}
+}

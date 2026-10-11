@@ -25,6 +25,7 @@ func compactResponse(in search.Response) search.Response {
 		} // Keep its original rank position.
 		r.Title = retainedField(r.Title, 512)
 		r.Snippet = retainedField(r.Snippet, 4096)
+		r.ContentTruncated = r.ContentTruncated || len(r.Content) > reader.MaxText
 		r.Content = retainedField(r.Content, reader.MaxText)
 		r.PublishedAt = retainedField(r.PublishedAt, 128)
 		r.ContentProvider = retainedField(r.ContentProvider, 64)

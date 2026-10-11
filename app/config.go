@@ -230,6 +230,12 @@ func (r *Runtime) validateAccess() error {
 }
 
 func New(getenv func(string) string) (*Runtime, error) {
+	return NewWithResearch(getenv, nil)
+}
+
+// NewWithResearch permits local evaluation to wrap research I/O before the
+// engine is built. Production callers use New and retain the normal wiring.
+func NewWithResearch(getenv func(string) string, configure func(*research.Config)) (*Runtime, error) {
 	cfg, err := Load(getenv)
 	if err != nil {
 		return nil, err
@@ -300,7 +306,11 @@ func New(getenv func(string) string) (*Runtime, error) {
 		}
 		fallback = &reader.Jina{APIKey: getenv("JINA_API_KEY"), Endpoint: getenv("JINA_READER_ENDPOINT"), Client: serviceClient}
 	}
-	engine, err := research.New(research.Config{Providers: providers, Reader: cached, FallbackReader: fallback, Model: lm, PlanWithModel: cfg.PlanWithModel, VerifyWithModel: cfg.VerifyWithModel, MaxSearchCalls: cfg.MaxSearchCalls, MaxPages: cfg.MaxPages, ReadConcurrency: cfg.ReadConcurrency, SearchConcurrency: cfg.SearchConcurrency, MaxEvidence: cfg.MaxEvidence, SearchTimeout: cfg.SearchTimeout, ReadTimeout: cfg.ReadTimeout, PlanningTimeout: cfg.PlanningTimeout, ModelTimeout: cfg.ModelTimeout})
+	researchConfig := research.Config{Providers: providers, Reader: cached, FallbackReader: fallback, Model: lm, PlanWithModel: cfg.PlanWithModel, VerifyWithModel: cfg.VerifyWithModel, MaxSearchCalls: cfg.MaxSearchCalls, MaxPages: cfg.MaxPages, ReadConcurrency: cfg.ReadConcurrency, SearchConcurrency: cfg.SearchConcurrency, MaxEvidence: cfg.MaxEvidence, SearchTimeout: cfg.SearchTimeout, ReadTimeout: cfg.ReadTimeout, PlanningTimeout: cfg.PlanningTimeout, ModelTimeout: cfg.ModelTimeout}
+	if configure != nil {
+		configure(&researchConfig)
+	}
+	engine, err := research.New(researchConfig)
 	if err != nil {
 		return nil, err
 	}

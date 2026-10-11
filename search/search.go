@@ -31,10 +31,11 @@ type Result struct {
 	URL     string `json:"url"`
 	Snippet string `json:"snippet,omitempty"`
 	// Content is optional provider-supplied page text, not a verified answer.
-	Content         string   `json:"content,omitempty"`
-	ContentProvider string   `json:"content_provider,omitempty"`
-	PublishedAt     string   `json:"published_at,omitempty"`
-	Sources         []Source `json:"sources"`
+	Content          string   `json:"content,omitempty"`
+	ContentProvider  string   `json:"content_provider,omitempty"`
+	ContentTruncated bool     `json:"content_truncated,omitempty"`
+	PublishedAt      string   `json:"published_at,omitempty"`
+	Sources          []Source `json:"sources"`
 }
 
 type Response struct {

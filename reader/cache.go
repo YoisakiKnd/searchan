@@ -92,7 +92,9 @@ func (c *Cache) ReadFresh(ctx context.Context, raw string) (Document, error) {
 }
 
 func (c *Cache) read(ctx context.Context, raw string, ttl time.Duration) (Document, error) {
-	hash := sha256.Sum256([]byte(raw))
+	// Extraction rules changed: legacy text may contain recommendation previews.
+	// Namespace the disk key so the next read refreshes it without deleting data.
+	hash := sha256.Sum256([]byte("page-text-v2\x00" + raw))
 	key := hex.EncodeToString(hash[:])
 	path := filepath.Join(c.Dir, key+".json")
 	gate := c.gate(hash[0])
@@ -113,13 +115,16 @@ func (c *Cache) read(ctx context.Context, raw string, ttl time.Duration) (Docume
 		decodeErr := httpx.Decode(f, 128<<10, &doc)
 		f.Close()
 		age := time.Since(doc.FetchedAt)
-		if decodeErr == nil && age >= 0 && age < ttl && doc.Text != "" {
+		if decodeErr == nil && age >= 0 && age < ttl && CheckContent(doc.Title, doc.Text) == nil {
 			return doc, nil
 		}
 	}
 	doc, err := c.Next.Read(ctx, raw)
 	if err != nil {
 		return doc, err
+	}
+	if err := CheckContent(doc.Title, doc.Text); err != nil {
+		return Document{}, err
 	}
 	// Failure to cache must not fail a successful page read.
 	_ = fsutil.WriteJSONLimit(path, doc, 128<<10)

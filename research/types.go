@@ -29,6 +29,8 @@ type Evidence struct {
 	Kind           string    `json:"kind"` // body or snippet; snippet is never silently promoted.
 	PublishedAt    string    `json:"published_at,omitempty"`
 	FetchedAt      time.Time `json:"fetched_at,omitempty"`
+	ReadMethod     string    `json:"read_method,omitempty"`
+	Truncated      bool      `json:"truncated,omitempty"`
 }
 type Claim struct {
 	Text        string   `json:"text"`
@@ -48,6 +50,7 @@ type Table struct {
 }
 type Answer struct {
 	AnswersQuery  *bool     `json:"answers_query,omitempty"`
+	Missing       []string  `json:"missing,omitempty"`
 	Title         string    `json:"title"`
 	Lead          Claim     `json:"lead"`
 	Sections      []Section `json:"sections"`
@@ -92,6 +95,22 @@ type Stats struct {
 	ReaderCalls     int              `json:"reader_calls"`
 	FallbackReads   int              `json:"fallback_reads"`
 	RecoveryQueries []string         `json:"recovery_queries,omitempty"`
+	RecoveryTrigger string           `json:"recovery_trigger,omitempty"`
+	CoverageChecks  int              `json:"coverage_checks,omitempty"`
+	ReadingBatches  int              `json:"reading_batches,omitempty"`
+	PageReads       []PageRead       `json:"page_reads,omitempty"`
+}
+
+// PageRead retains bounded provenance and outcome metadata, never page text.
+type PageRead struct {
+	URL              string `json:"url"`
+	Method           string `json:"method,omitempty"`
+	State            string `json:"state"`
+	Issue            string `json:"issue,omitempty"`
+	ProviderRejected string `json:"provider_rejected,omitempty"`
+	FallbackReason   string `json:"fallback_reason,omitempty"`
+	Truncated        bool   `json:"truncated,omitempty"`
+	ElapsedMS        int64  `json:"elapsed_ms"`
 }
 
 type SearchCall struct {
@@ -109,6 +128,14 @@ func ValidateAnswer(a Answer, ev []Evidence) error {
 	}
 	if len(a.Sections) > 6 || len(a.Uncertainties) > 6 {
 		return errors.New("answer has too many sections")
+	}
+	if len(a.Missing) > 4 {
+		return errors.New("too many answer gaps")
+	}
+	for _, gap := range a.Missing {
+		if len(gap) > 400 {
+			return errors.New("oversized answer gap")
+		}
 	}
 	known := map[string]bool{}
 	for _, e := range ev {

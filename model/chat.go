@@ -92,5 +92,5 @@ func (c *Client) Complete(ctx context.Context, system string, input, out any) er
 	if strings.HasPrefix(content, "```json") && strings.HasSuffix(content, "```") {
 		content = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(content, "```json"), "```"))
 	}
-	return httpx.Decode(strings.NewReader(content), 64<<10, out)
+	return decodeOutput(content, out)
 }
