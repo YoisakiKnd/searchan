@@ -15,10 +15,15 @@ on:
         description: Also verify optional Docker deployment
         type: boolean
         default: false
+      search_probe:
+        description: Run only a public DDG connectivity probe (no model or bot credentials)
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
   linux:
+    if: github.event_name != 'workflow_dispatch' || !inputs.search_probe
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -79,6 +84,33 @@ jobs:
           name: linux-bundles
           path: dist/
           if-no-files-found: error
+  live-search-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.search_probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - run: go build -trimpath -o bin/searchan ./cmd/searchan
+      - name: One public query through the real DDG adapter
+        run: |
+          mkdir -p artifacts/live-search-probe
+          set +e
+          bin/searchan -providers ddg -limit 10 -timeout 8s 'SpringData简介' > artifacts/live-search-probe/ddg.json 2> artifacts/live-search-probe/stderr.log
+          task_probe_status=$?
+          set -e
+          printf '{"exit_code":%d,"model_calls":0,"platform_messages":0}\n' "$task_probe_status" > artifacts/live-search-probe/status.json
+          exit "$task_probe_status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-search-probe
+          path: artifacts/live-search-probe/
+          if-no-files-found: warn
+          retention-days: 7
   container:
     if: github.event_name == 'workflow_dispatch' && inputs.docker
     runs-on: ubuntu-latest

@@ -148,6 +148,23 @@ systemd 设置整体 MemoryMax=384M（含 Typst）、CPU 最多两核、TasksMax
 
 搜索失败的任务文件新增 `failure.search_calls` / `pages_read` / `model_calls` 和 `search_failures`，journal 的 `task failed` 同时记录安全类别计数，例如 `network_timeout`、`http_429`、`blocked`。这区分服务故障和正常无结果，不输出故障的原始远端文本；旧任务无字段时不能补猜原因。单任务同后端连续两次网络/5xx 故障后暂停并保留已有结果，其他已配置后端继续；所有后端不可用仍报错，不凭模型常识生成无证据答案。
 
+## 免费搜索连通性诊断
+
+可先在实际部署主机运行现有搜索命令，不调用模型或发送平台消息：
+
+```sh
+/opt/searchan/current/searchan -providers ddg -limit 10 -timeout 8s 'SpringData简介'
+```
+
+开发分支的check工作流另有可选 `search_probe`，只在手动启用时向DDG发出上述一个公开查询，保存JSON结果、错误及退出码；不加载私有配置，不需要模型/Bot密钥。该模式跳过常规Linux安装检查；普通push、PR和发布调用仍运行完整工程检查。根据[GitHub工作流调度接口](https://docs.github.com/en/rest/actions/workflows#create-a-workflow-dispatch-event)，可指定分支及输入：
+
+```sh
+gh workflow run check.yml --ref codex/readiness-hardening-20261013 \
+  -f search_probe=true -f docker=false
+```
+
+下载该次运行的 `live-search-probe` artifact核对，保留7天。云端成功只说明该runner的请求/解析成功，仍须查看结果是否对应Spring Data；不能证明本机或部署服务器可达、AI回答正确，空结果也不是质量通过。诊断失败会如实标记job失败；不无限重试或规避挑战页，不作为默认CI的网络依赖。
+
 ## 发布检查与待验收
 
 开发机统一检查，缺少工具会失败，不会静默跳过：
