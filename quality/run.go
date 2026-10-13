@@ -50,6 +50,7 @@ type Result struct {
 	LiveModelCalls    int                      `json:"live_model_calls"`
 	ModelErrors       []string                 `json:"model_errors,omitempty"`
 	ModelOutputIssues []model.OutputDiagnostic `json:"model_output_issues,omitempty"`
+	ModelRequests     []model.CallMetrics      `json:"model_requests,omitempty"`
 	AnswerCharacters  int                      `json:"answer_characters"`
 	Statements        int                      `json:"statements"`
 	ElapsedMS         int64                    `json:"elapsed_ms"`
@@ -304,6 +305,7 @@ func Run(ctx context.Context, opt Options, env func(string) string, progress io.
 		result.LiveModelCalls = tape.LiveModelCalls()
 		result.ModelErrors = tape.ModelErrors()
 		result.ModelOutputIssues = tape.ModelOutputIssues()
+		result.ModelRequests = tape.ModelRequests()
 		for _, claim := range claims(output) {
 			result.Statements++
 			result.AnswerCharacters += utf8.RuneCountInString(claim.Text)

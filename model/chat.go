@@ -40,6 +40,23 @@ func (c *Client) Validate() error {
 }
 
 func (c *Client) Complete(ctx context.Context, system string, input, out any) error {
+	return c.CompleteObserved(ctx, system, input, out, nil)
+}
+
+func (c *Client) CompleteObserved(ctx context.Context, system string, input, out any, observe func(CallMetrics)) (result error) {
+	var metrics CallMetrics
+	var wire response
+	if observe != nil {
+		started := time.Now()
+		defer func() {
+			metrics.ElapsedMS = time.Since(started).Milliseconds()
+			metrics.OutputDecoded = result == nil
+			if metrics.ResponseDecoded {
+				metrics.Usage = wire.tokenUsage(metrics.API)
+			}
+			observe(metrics)
+		}()
+	}
 	if _, bounded := ctx.Deadline(); !bounded {
 		var stop context.CancelFunc
 		ctx, stop = context.WithTimeout(ctx, 30*time.Second)
@@ -49,6 +66,7 @@ func (c *Client) Complete(ctx context.Context, system string, input, out any) er
 	if err != nil {
 		return err
 	}
+	metrics.InputJSONBytes = len(data)
 	if len(data) > 128<<10 {
 		return errors.New("model input exceeds 128 KiB")
 	}
@@ -56,15 +74,17 @@ func (c *Client) Complete(ctx context.Context, system string, input, out any) er
 	if err != nil {
 		return err
 	}
+	metrics.API = api
 	client := c.Client
 	if client == nil {
 		client = defaultClient
 	}
-	var wire response
 	start := time.Now()
 	for attempt := 0; ; attempt++ {
+		metrics.RequestAttempts++
 		err := httpx.JSON(ctx, client, "POST", c.Endpoint, headers, payload, &wire, 256<<10)
 		if err == nil {
+			metrics.ResponseDecoded = true
 			break
 		}
 		if attempt >= c.MaxRetries || !retryable(ctx, err) || !retryBudget(ctx) {

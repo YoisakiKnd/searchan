@@ -50,6 +50,7 @@ type Tape struct {
 	liveModelCalls    int
 	modelErrors       []string
 	modelOutputIssues []model.OutputDiagnostic
+	modelRequests     []model.CallMetrics
 }
 
 func Record() *Tape { return &Tape{snapshot: Snapshot{Version: 1, Complete: true}} }
@@ -89,6 +90,12 @@ func (t *Tape) ModelOutputIssues() []model.OutputDiagnostic {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]model.OutputDiagnostic(nil), t.modelOutputIssues...)
+}
+
+func (t *Tape) ModelRequests() []model.CallMetrics {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]model.CallMetrics(nil), t.modelRequests...)
 }
 
 // SetPlan fixes the retrieval plan for controlled snapshot experiments. This
@@ -225,7 +232,18 @@ func (m *tapedModel) Complete(ctx context.Context, prompt string, input, output 
 	m.tape.mu.Lock()
 	m.tape.liveModelCalls++
 	m.tape.mu.Unlock()
-	err := m.next.Complete(ctx, prompt, input, output)
+	var err error
+	if observed, ok := m.next.(model.ObservedCompleter); ok {
+		err = observed.CompleteObserved(ctx, prompt, input, output, func(metrics model.CallMetrics) {
+			m.tape.mu.Lock()
+			defer m.tape.mu.Unlock()
+			if len(m.tape.modelRequests) < 6 {
+				m.tape.modelRequests = append(m.tape.modelRequests, metrics)
+			}
+		})
+	} else {
+		err = m.next.Complete(ctx, prompt, input, output)
+	}
 	if err != nil {
 		m.tape.mu.Lock()
 		if len(m.tape.modelErrors) < 6 {

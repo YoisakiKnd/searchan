@@ -2,7 +2,7 @@
 
 本地真实搜索、AI 总结及 Typst 效果测试见 [QUALITY_EVALUATION.md](QUALITY_EVALUATION.md)：固定 30 条复核题，默认先跑 3 条，保存搜索/正文快照和最终图片，并逐条检查事实与引用支持。
 
-最新记录见 [QUALITY_ITERATION_28.md](QUALITY_ITERATION_28.md)：当前模型两条固定证据回归完成单图，PostgreSQL默认值有支持但范围仍缺，JWT仍有范围错误。Telegram支持带实际mention实体的紧贴中文提问，代码/引用示例不建任务；回归、实际Typst到模拟Telegram及完整工程检查通过。第四至二十八轮整理为开发候选并走Linux CI，正式版本仍为RC.6；完整质量门槛未完成。
+最新记录见 [QUALITY_ITERATION_30.md](QUALITY_ITERATION_30.md)：可选用量观测已通过完整工程检查，当前模型正常固定证据流程的请求尝试及token用量实际落盘，单图已查看。较短选段和逐来源范围候选未解决缺口，均不采用；已知JWT范围错误及正式质量门槛仍未通过。新改动在开发分支验收，不正式发布，Linux结果以对应提交Actions为准。
 
 Go 搜索 Bot：多后端检索 → 读取网页 → 筛选证据 → 带引用总结与核验 → Typst 渲染 PNG → Telegram / QQ 回复。不读取群聊历史。
 

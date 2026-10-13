@@ -224,7 +224,7 @@ func TestRunReplayAndManualReview(t *testing.T) {
 		if invalidCitation.Load() {
 			body = strings.Replace(body, `"e1"`, `"TOPSECRET-TEST private draft citation"`, 1)
 		}
-		fmt.Fprintf(w, `{"choices":[{"message":{"content":%q},"finish_reason":"stop"}]}`, body)
+		fmt.Fprintf(w, `{"choices":[{"message":{"content":%q},"finish_reason":"stop"}],"usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150,"completion_tokens_details":{"reasoning_tokens":0}}}`, body)
 	}))
 	defer srv.Close()
 	env := map[string]string{"SEARCHAN_PROVIDERS": "exa", "EXA_ENDPOINT": srv.URL + "/search", "EXA_API_KEY": "TOPSECRET-TEST", "MODEL_ENDPOINT": srv.URL + "/model", "MODEL_NAME": "fixture", "MODEL_API_KEY": "TOPSECRET-TEST", "MODEL_RETRIES": "0", "SEARCHAN_MODEL_PLAN": "false", "SEARCHAN_MODEL_VERIFY": "false"}
@@ -238,6 +238,13 @@ func TestRunReplayAndManualReview(t *testing.T) {
 	r, err := Run(context.Background(), opt, getenv, io.Discard)
 	if err != nil || r.Completed != 1 || r.Cases[0].Stats.ModelCalls != 1 || searches.Load() != 1 || models.Load() != 1 {
 		t.Fatalf("live fixture run failed: %+v %v", r, err)
+	}
+	if calls := r.Cases[0].ModelRequests; len(calls) != 1 || calls[0].RequestAttempts != 1 || !calls[0].ResponseDecoded || !calls[0].OutputDecoded || calls[0].Usage == nil || calls[0].Usage.TotalTokens == nil || *calls[0].Usage.TotalTokens != 150 || calls[0].Usage.ReasoningTokens == nil || *calls[0].Usage.ReasoningTokens != 0 {
+		t.Fatalf("live adapter usage missing: %+v", calls)
+	}
+	var savedReport Report
+	if err := readJSON(filepath.Join(opt.Out, "report.json"), 2<<20, &savedReport); err != nil || !reflect.DeepEqual(savedReport.Cases[0].ModelRequests, r.Cases[0].ModelRequests) {
+		t.Fatalf("request observations missing from saved report: %v", err)
 	}
 	if opt.Render {
 		if len(r.Cases[0].Images) != 1 {
