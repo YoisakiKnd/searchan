@@ -1,0 +1,174 @@
+package research
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"searchan/reader"
+	"searchan/search"
+)
+
+type coverageCandidate struct {
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	Title   string `json:"title"`
+	Snippet string `json:"snippet,omitempty"`
+	Origin  string `json:"origin"`
+	hit     hit
+}
+
+// Present existing leads, never generated URLs. Reserve a few slots for
+// explicit reference links in already-read documents; they remain untrusted
+// leads until fetched. This pool is built once, so linked pages cannot recurse.
+func (g *gathering) coverageCandidates() []coverageCandidate {
+	pool := make([]coverageCandidate, 0, 20)
+	seen := map[string]bool{}
+	add := func(h hit, origin string) {
+		key := search.DocumentURL(h.URL)
+		if key == "" || len(key) > 2048 || seen[key] || g.reading.attempted[key] || reader.ValidateURL(key) != nil || len(pool) >= 20 {
+			return
+		}
+		seen[key] = true
+		h.URL, h.pageKey = key, key
+		pool = append(pool, coverageCandidate{ID: fmt.Sprintf("c%d", len(pool)+1), URL: key, Title: reader.Clip(h.Title, 200), Snippet: reader.Clip(h.Snippet, 300), Origin: origin, hit: h})
+	}
+	ranked := rankHits(g.out.Plan, g.retrieval.hits, g.reading.attempted, 20)
+	for _, h := range ranked {
+		add(h, "search")
+		if len(pool) == 12 {
+			break
+		}
+	}
+	// Preserve discovery paths too: a generic API reference can rank below
+	// keyword-dense tutorials after fusion. The top two actual results of each
+	// original query get a chance to be assessed, without declaring them trusted.
+	for _, q := range g.out.Plan.Queries[:min(3, len(g.out.Plan.Queries))] {
+		for _, h := range queryLeaders(g.retrieval.hits, queryKey(q)) {
+			add(h, "search")
+		}
+	}
+	linkSets := [][]reader.Link{g.reading.hints}
+	for _, doc := range g.reading.docs {
+		linkSets = append(linkSets, doc.Links[:min(32, len(doc.Links))])
+	}
+	linked := 0
+links:
+	for _, links := range linkSets {
+		for _, link := range links {
+			if referenceLabel(link.Text) {
+				before := len(pool)
+				add(hit{Result: search.Result{URL: link.URL, Title: link.Text}}, "document_link")
+				linked += len(pool) - before
+				if linked == 4 {
+					break links
+				}
+			}
+		}
+	}
+	for _, h := range ranked {
+		add(h, "search")
+	}
+	return pool
+}
+
+func queryLeaders(hits []hit, query string) []hit {
+	var top []hit
+	for _, h := range hits {
+		rank := h.queryRanks[query]
+		if rank == 0 {
+			continue
+		}
+		i := 0
+		for i < len(top) && top[i].queryRanks[query] <= rank {
+			i++
+		}
+		if i >= 2 {
+			continue
+		}
+		top = append(top, h)
+		copy(top[i+1:], top[i:])
+		top[i] = h
+		top = top[:min(2, len(top))]
+	}
+	return top
+}
+
+func referenceLabel(label string) bool {
+	label = strings.ToLower(strings.TrimSpace(label))
+	// Numbered RFC anchors often contain no "reference" or "specification"
+	// word. Recognize the visible identifier as a lead, without guessing a URL
+	// or asserting anything about the publisher or the document's authority.
+	if strings.HasPrefix(label, "rfc") {
+		number := strings.TrimSpace(strings.TrimPrefix(label[3:], "-"))
+		if len(number) > 0 && len(number) <= 6 {
+			digits := true
+			for i := range number {
+				digits = digits && number[i] >= '0' && number[i] <= '9'
+			}
+			if digits {
+				return true
+			}
+		}
+	}
+	for _, marker := range []string{"官方文档", "原始论文", "参考文档", "原文", "规范"} {
+		if strings.Contains(label, marker) {
+			return true
+		}
+	}
+	for _, word := range strings.FieldsFunc(label, func(r rune) bool { return r < 'a' || r > 'z' }) {
+		switch word {
+		case "documentation", "docs", "reference", "specification", "paper":
+			return true
+		}
+	}
+	return false
+}
+
+// The model may choose IDs only. Unknown IDs, duplicates, attempted documents
+// and excess selections cannot introduce requests or bypass the shared budget.
+func (g *gathering) readCoverageCandidates(ctx context.Context, pool []coverageCandidate, ids []string, pageLimit int) bool {
+	budget := min(2, pageLimit-g.out.Stats.PagesRead)
+	if budget <= 0 || ctx.Err() != nil {
+		return false
+	}
+	var selected []hit
+	seen := map[string]bool{}
+	for _, id := range ids[:min(8, len(ids))] {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		for _, c := range pool {
+			if c.ID == id && !g.reading.attempted[c.hit.pageKey] {
+				selected = append(selected, c.hit)
+				for i := range g.out.Stats.CoverageCandidates {
+					if g.out.Stats.CoverageCandidates[i].ID == id {
+						g.out.Stats.CoverageCandidates[i].Selected = true
+						break
+					}
+				}
+				break
+			}
+		}
+		if len(selected) == budget {
+			break
+		}
+	}
+	if len(selected) == 0 {
+		return false
+	}
+	before := g.out.Stats.PagesRead
+	beforeDocs := len(g.reading.docs)
+	g.out.Warnings = append(g.out.Warnings, g.reading.read(ctx, g.out.Plan, selected, budget)...)
+	g.out.Stats.CandidateReads += g.out.Stats.PagesRead - before
+	g.out.Evidence = SelectEvidenceForPlan(g.out.Plan, g.reading.docs, g.reading.published, g.engine.cfg.MaxEvidence)
+	for _, doc := range g.reading.docs[beforeDocs:] {
+		for _, ev := range g.out.Evidence {
+			if ev.URL == doc.URL {
+				return true
+			}
+		}
+	}
+	return false
+}

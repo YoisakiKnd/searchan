@@ -16,6 +16,7 @@ import (
 type passage struct {
 	text        string
 	first, last int
+	heading     string
 }
 
 // Merge short adjacent paragraphs instead of dropping short facts/headings.
@@ -50,7 +51,7 @@ func splitPassages(text string) []passage {
 		}
 		paragraph += breaks
 		if body := strings.TrimSpace(part); body != "" {
-			out = append(out, passage{body, first, max(first, last)})
+			out = append(out, passage{text: body, first: first, last: max(first, last)})
 		}
 		start = end
 		first = paragraph
@@ -136,11 +137,13 @@ func similarity(a, b sketch) float64 {
 }
 
 type scoredEvidence struct {
-	evidence Evidence
-	vector   lexicalVector
-	score    float64
-	sketch   sketch
-	domain   string
+	evidence     Evidence
+	vector       lexicalVector
+	score        float64
+	sketch       sketch
+	domain       string
+	opening      bool
+	headingScore float64
 }
 
 func SelectEvidence(query string, docs []reader.Document, published map[string]string, max int) []Evidence {
@@ -159,16 +162,15 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 		query = plan.Queries[0]
 	}
 	query += " " + strings.Join(plan.focus, " ")
+	overviews := overviewTargets(plan)
+	intro := len(plan.Queries) > 0 && introductoryQuery(plan.Queries[0])
 	l := newLexical(query, plan.Aspects, plan.Queries)
 	scratch := make([]uint16, len(l.terms))
 	items := make([]scoredEvidence, 0, len(docs)*16)
 	vectors := make([]lexicalVector, 0, len(docs)*16)
 	hashes := map[string]bool{}
 	urls := map[string]bool{}
-	var entities []string
-	if len(plan.Queries) > 0 {
-		entities = queryEntities(plan.Queries[0])
-	}
+	entities := relevanceEntities(plan)
 	for _, doc := range docs {
 		key := search.DocumentURL(doc.URL)
 		if key == "" || urls[key] || (doc.Hash != "" && hashes[doc.Hash]) {
@@ -180,16 +182,38 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 		}
 		titleVector := l.vector(doc.Title, scratch)
 		titleBoost := 0.0
+		for _, overview := range overviews {
+			titleBoost = math.Max(titleBoost, overviewFit(overview, doc.URL, doc.Title))
+		}
+		focusedOverview := titleBoost > 0
 		for _, f := range titleVector.matches {
 			titleBoost += l.terms[f.term].weight * .12
 		}
 		docFocused := matchesEntities(doc.Title+" "+doc.URL, entities)
-		for _, p := range splitPassages(reader.Clip(doc.Text, reader.MaxText)) {
+		for pi, p := range documentPassages(doc) {
 			if !docFocused && !matchesEntities(p.text, entities) {
 				continue
 			}
 			v := l.vector(p.text, scratch)
-			items = append(items, scoredEvidence{evidence: Evidence{URL: doc.URL, Title: doc.Title, Text: p.text, DocumentHash: doc.Hash, Paragraph: p.first, ParagraphEnd: p.last, Kind: "body", PublishedAt: published[doc.URL], FetchedAt: doc.FetchedAt, ReadMethod: reader.Clip(doc.Method, 64), Truncated: doc.Truncated}, vector: v, score: titleBoost, domain: domain(doc.URL)})
+			headingScore := 0.0
+			if p.heading != "" {
+				hv := l.vector(p.heading, scratch)
+				for _, f := range hv.matches {
+					headingScore += l.terms[f.term].weight
+				}
+				headingScore /= math.Sqrt(float64(max(1, hv.length)))
+			}
+			opening := false
+			if pi < 2 {
+				// An overview's early outlined section may describe capabilities
+				// without repeating its entity name. Preserve that page context;
+				// ranking hints never alter the actual quoted passage or prove trust.
+				opening = intro && focusedOverview && docFocused && p.heading != ""
+				for _, overview := range overviews {
+					opening = opening || overviewFit(overview, doc.URL, doc.Title) > 0 && mentionsEntity(p.text, overview)
+				}
+			}
+			items = append(items, scoredEvidence{evidence: Evidence{URL: doc.URL, Title: doc.Title, Text: p.text, DocumentHash: doc.Hash, Paragraph: p.first, ParagraphEnd: p.last, Kind: "body", PublishedAt: published[doc.URL], FetchedAt: doc.FetchedAt, ReadMethod: reader.Clip(doc.Method, 64), Truncated: doc.Truncated}, vector: v, score: titleBoost, domain: domain(doc.URL), opening: opening, headingScore: headingScore})
 			vectors = append(vectors, v)
 		}
 	}
@@ -197,16 +221,38 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 		return nil
 	}
 	scores := l.scores(vectors)
-	bestBody := 0.0
+	bestBody, bestHeading := 0.0, 0.0
 	for i := range items {
 		items[i].score += scores[i]
 		bestBody = math.Max(bestBody, scores[i])
+		bestHeading = math.Max(bestHeading, items[i].headingScore)
+	}
+	// Definition/overview questions need the opening in context. Repeated entity
+	// names in references and footers must not consume all per-page slots. Scale
+	// against this corpus rather than adding a negligible fixed BM25 offset.
+	for i := range items {
+		// The first passage of a query-relevant section carries its definition
+		// or contract before repeated examples. Headings affect rank only; all
+		// evidence remains a contiguous, unchanged slice of the fetched text.
+		if bestHeading > 0 {
+			items[i].score += .7 * bestBody * items[i].headingScore / bestHeading
+		}
+		if items[i].opening {
+			// Give introductory openings at least the strongest body relevance.
+			// Otherwise an entity-free capabilities section is admitted, but
+			// repeated names in release lists still consume all per-page slots.
+			boost := .8 * bestBody
+			if intro {
+				boost = math.Max(boost, bestBody-scores[i])
+			}
+			items[i].score += boost
+		}
 	}
 	// Do not fill diversity slots with unrelated text merely because its domain differs.
 	if bestBody > 0 {
 		filtered := items[:0]
 		for i, item := range items {
-			if scores[i] >= .04*bestBody {
+			if item.opening || scores[i] >= .04*bestBody {
 				filtered = append(filtered, item)
 			}
 		}

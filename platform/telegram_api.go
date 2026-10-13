@@ -83,9 +83,11 @@ func (t *Telegram) call(ctx context.Context, method string, payload, out any) er
 }
 
 type BotIdentity struct {
-	ID       int64  `json:"id"`
-	IsBot    bool   `json:"is_bot"`
-	Username string `json:"username"`
+	ID                      int64  `json:"id"`
+	IsBot                   bool   `json:"is_bot"`
+	Username                string `json:"username"`
+	CanJoinGroups           bool   `json:"can_join_groups"`
+	CanReadAllGroupMessages bool   `json:"can_read_all_group_messages"`
 }
 
 func (t *Telegram) GetMe(ctx context.Context) (BotIdentity, error) {

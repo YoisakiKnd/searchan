@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -37,16 +38,24 @@ func (r *pausedRenderer) Render(ctx context.Context, id string, output research.
 }
 
 func TestTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T) {
-	for _, snippetOnly := range []bool{false, true} {
-		name := "full-summary"
-		if snippetOnly {
-			name = "brief-summary"
-		}
-		t.Run(name, func(t *testing.T) { testTelegramWebhookRealPNGAndGracefulShutdown(t, snippetOnly) })
+	for _, tc := range []struct {
+		name, text, query string
+		snippetOnly       bool
+		entities          []map[string]any
+	}{
+		{"full-summary", "/search@searchan_test_bot Go context cancellation", "Go context cancellation", false, nil},
+		{"brief-summary", "/search@searchan_test_bot Go context cancellation", "Go context cancellation", true, nil},
+		{"leading-mention-topic", "@searchan_test_bot Go context cancellation", "Go context cancellation", false, nil},
+		{"adjacent-chinese-mention", "@searchan_test_bot介绍 Go context cancellation", "介绍 Go context cancellation", false, []map[string]any{{"type": "mention", "offset": 0, "length": len("@searchan_test_bot")}}},
+		{"adjacent-slash-command", "@searchan_test_bot/search Go context cancellation", "Go context cancellation", false, []map[string]any{{"type": "mention", "offset": 0, "length": len("@searchan_test_bot")}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testTelegramWebhookRealPNGAndGracefulShutdown(t, tc.text, tc.query, tc.snippetOnly, tc.entities)
+		})
 	}
 }
 
-func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, snippetOnly bool) {
+func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, text, query string, snippetOnly bool, entities []map[string]any) {
 	binary := os.Getenv("SEARCHAN_TEST_TYPST")
 	if binary == "" {
 		t.Skip("set SEARCHAN_TEST_TYPST for actual Typst end-to-end test")
@@ -63,6 +72,9 @@ func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, snippetOnly boo
 				return
 			}
 			defer req.MultipartForm.RemoveAll()
+			if req.FormValue("message_thread_id") != "5" || req.FormValue("chat_id") != "123" {
+				t.Error("image was not routed to the original chat topic")
+			}
 			f, _, err := req.FormFile("photo")
 			if err != nil {
 				t.Error(err)
@@ -100,10 +112,13 @@ func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, snippetOnly boo
 	done := make(chan error, 1)
 	go func() { done <- s.serve(ctx, listener) }()
 	url := "http://" + listener.Addr().String() + "/webhooks/telegram"
-	body := `{"update_id":77,"message":{"message_id":7,"text":"/search@searchan_test_bot Go context cancellation","from":{"id":42},"chat":{"id":123}}}`
+	body, err := json.Marshal(map[string]any{"update_id": 77, "message": map[string]any{"message_id": 7, "message_thread_id": 5, "text": text, "entities": entities, "from": map[string]int{"id": 42}, "chat": map[string]int{"id": 123}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	post := func(secret string, want int) {
 		t.Helper()
-		req, _ := http.NewRequest("POST", url, strings.NewReader(body))
+		req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
 		req.Header.Set("X-Telegram-Bot-Api-Secret-Token", secret)
 		client := &http.Client{Timeout: time.Second}
 		res, err := client.Do(req)
@@ -146,6 +161,9 @@ func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, snippetOnly boo
 	}
 	if images.Load() != 1 || texts.Load() != 1 || p.calls.Load() != 1 {
 		t.Fatalf("images=%d texts=%d searches=%d", images.Load(), texts.Load(), p.calls.Load())
+	}
+	if renderer.output.Query != query {
+		t.Fatal("mention parsing changed the search question", renderer.output.Query)
 	}
 	if snippetOnly && (renderer.output.AnswerMode != "brief_summary" || !strings.Contains(renderer.output.Text(), "未读取原文")) {
 		t.Fatal("brief summary or limitation did not reach the real Typst renderer")

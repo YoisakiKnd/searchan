@@ -124,6 +124,7 @@ func (q *OneBot) DecodeWebhook(req *http.Request) (Event, error) {
 		return Event{}, nil
 	}
 	var text string
+	leadingMention := false
 	if len(wire.Message) > 0 && wire.Message[0] == '"' {
 		if err := json.Unmarshal(wire.Message, &text); err != nil {
 			return Event{}, errors.New("invalid OneBot text")
@@ -141,6 +142,7 @@ func (q *OneBot) DecodeWebhook(req *http.Request) (Event, error) {
 			return Event{}, errors.New("invalid OneBot message segments")
 		}
 		var b strings.Builder
+		canLead := true
 		for _, s := range segments {
 			switch s.Type {
 			case "at":
@@ -154,6 +156,9 @@ func (q *OneBot) DecodeWebhook(req *http.Request) (Event, error) {
 				if err := id.UnmarshalJSON(data.QQ); err != nil || string(id) != q.SelfID {
 					return Event{}, nil
 				}
+				if canLead {
+					leadingMention = true
+				}
 			case "text":
 				var data struct {
 					Text string `json:"text"`
@@ -162,11 +167,26 @@ func (q *OneBot) DecodeWebhook(req *http.Request) (Event, error) {
 					return Event{}, errors.New("invalid OneBot text segment")
 				}
 				b.WriteString(data.Text)
+				if strings.TrimSpace(data.Text) != "" {
+					canLead = false
+				}
+			case "reply":
+				// Reply metadata can precede the visible leading mention.
+			default:
+				canLead = false
 			}
 		}
 		text = b.String()
 	}
-	return Event{ID: "qq:onebot:" + q.SelfID + ":" + target.Scope + ":" + target.ChatID + ":" + target.MessageID, Target: target, Text: strings.TrimSpace(text)}, nil
+	text = strings.TrimSpace(text)
+	if leadingMention {
+		if text == "" {
+			text = "/help"
+		} else if !strings.HasPrefix(text, "/") {
+			text = "/search " + text
+		}
+	}
+	return Event{ID: "qq:onebot:" + q.SelfID + ":" + target.Scope + ":" + target.ChatID + ":" + target.MessageID, Target: target, Text: text}, nil
 }
 
 func (q *OneBot) send(ctx context.Context, method string, body io.Reader, length int64) (Receipt, error) {

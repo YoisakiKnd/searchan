@@ -23,6 +23,9 @@ func inferIntent(query string) string {
 			}
 			continue
 		}
+		if entry.intent == "compare" && relationshipQuery(q) {
+			return "compare"
+		}
 		for _, marker := range entry.markers {
 			if strings.Contains(q, marker) {
 				return entry.intent
@@ -65,6 +68,11 @@ func normalizePlan(base, proposed Plan) Plan {
 		base.Intent = proposed.Intent
 		base.RequiresFresh = base.RequiresFresh || proposed.Intent == "recent"
 	}
+	// Explicit comparison/relationship wording remains a two-sided request even
+	// if the planner calls it a fact. Freshness is tracked independently above.
+	if len(base.Queries) > 0 && inferIntent(base.Queries[0]) == "compare" {
+		base.Intent = "compare"
+	}
 	seen := map[string]bool{}
 	for _, q := range base.Queries {
 		seen[queryKey(q)] = true
@@ -76,7 +84,7 @@ func normalizePlan(base, proposed Plan) Plan {
 		}
 		q = anchoredQuery(base.Queries[0], q)
 		key := queryKey(q)
-		if q != "" && len(q) <= 2048 && !seen[key] && len(base.Queries) < 3 {
+		if q != "" && len(q) <= 2048 && !seen[key] && len(base.Queries) < 4 {
 			base.Queries = append(base.Queries, q)
 			seen[key] = true
 		}
@@ -94,7 +102,67 @@ func normalizePlan(base, proposed Plan) Plan {
 	if len(aspects) > 0 {
 		base.Aspects = aspects
 	}
+	base = sourceDiscoveryPlan(base)
+	base.Queries = base.Queries[:min(3, len(base.Queries))]
 	return base
+}
+
+// A neutral overview query complements local-language results for explicitly
+// named technical entities. It is a discovery hint, never proof of authority;
+// no guessed domains or URLs are introduced. Keep the original and cap at three.
+func sourceDiscoveryPlan(plan Plan) Plan {
+	if len(plan.Queries) == 0 || needsFresh(plan) || (plan.Intent != "compare" && !introductoryQuery(plan.Queries[0])) {
+		return plan
+	}
+	entities := discoveryEntities(plan)
+	if len(entities) == 0 {
+		return plan
+	}
+	queries := []string{plan.Queries[0]}
+	for _, entity := range entities[:min(2, len(entities))] {
+		queries = append(queries, overviewQuery(entity))
+	}
+	// Prefer a planned query over a spelling-only variant of the raw request.
+	canonical := queryKey(spacedQuery(plan.Queries[0]))
+	for _, q := range plan.Queries[1:] {
+		if queryKey(q) != canonical && !contains(queries, q) && len(queries) < 3 {
+			queries = append(queries, q)
+		}
+	}
+	if len(queries) < 3 && canonical != queryKey(plan.Queries[0]) {
+		queries = append(queries, spacedQuery(plan.Queries[0]))
+	}
+	plan.Queries = queries
+	return plan
+}
+
+func overviewQuery(entity string) string {
+	return `"` + entity + `" project overview official website`
+}
+
+// A planner may restore capitalization of an explicitly written lowercase
+// name. Accept it only when every word occurs as that same entity in the query.
+func discoveryEntities(plan Plan) []string {
+	if len(plan.Queries) == 0 {
+		return nil
+	}
+	if plan.Intent == "compare" {
+		if names := comparisonNames(plan.Queries[0]); len(names) == 2 {
+			return names
+		}
+	}
+	entities := discoveryNames(plan.Queries[0])
+	if len(entities) > 0 {
+		return entities
+	}
+	for _, q := range plan.Queries[1:] {
+		for _, entity := range discoveryNames(q) {
+			if mentionsEntity(plan.Queries[0], entity) && !contains(entities, entity) && len(entities) < 2 {
+				entities = append(entities, entity)
+			}
+		}
+	}
+	return entities
 }
 
 func modelContext(ctx context.Context, limit time.Duration, reserveVerification bool) (context.Context, context.CancelFunc) {

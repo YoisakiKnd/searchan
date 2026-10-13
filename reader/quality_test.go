@@ -94,6 +94,63 @@ func TestCacheRefreshesTextFromPreviousExtractor(t *testing.T) {
 	}
 }
 
+func TestCacheRefreshesPreviousLanguageMenuExtractor(t *testing.T) {
+	u := "https://example.org/reference"
+	r := &qualityReader{}
+	c := &Cache{Dir: t.TempDir(), TTL: time.Hour, Next: r}
+	oldHash := sha256.Sum256([]byte("page-text-v2\x00" + u))
+	oldPath := filepath.Join(c.Dir, hex.EncodeToString(oldHash[:])+".json")
+	legacy := MakeDocument(u, "Legacy", "Alternate language menu occupied the discovery links.", "http")
+	if err := fsutil.WriteJSON(oldPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		doc, err := c.Read(context.Background(), u)
+		if err != nil || doc.Text == legacy.Text || r.calls != 1 {
+			t.Fatalf("previous extraction cache reused: %+v %v calls=%d", doc, err, r.calls)
+		}
+	}
+}
+
+func TestCacheRefreshesUnoutlinedExtractor(t *testing.T) {
+	u := "https://example.org/manual"
+	r := &qualityReader{}
+	c := &Cache{Dir: t.TempDir(), TTL: time.Hour, Next: r}
+	oldHash := sha256.Sum256([]byte("page-text-v3\x00" + u))
+	oldPath := filepath.Join(c.Dir, hex.EncodeToString(oldHash[:])+".json")
+	legacy := MakeDocument(u, "Legacy", "Table of Contents. Configuration examples without structural headings.", "http")
+	if err := fsutil.WriteJSON(oldPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		doc, err := c.Read(context.Background(), u)
+		if err != nil || doc.Text == legacy.Text || r.calls != 1 {
+			t.Fatal("unoutlined cache prevented refreshed extraction", doc, err, r.calls)
+		}
+	}
+}
+
+func TestCacheRefreshesWidgetContaminatedTitle(t *testing.T) {
+	u := "https://example.org/reference"
+	r := &qualityReader{}
+	c := &Cache{Dir: t.TempDir(), TTL: time.Hour, Next: r}
+	oldHash := sha256.Sum256([]byte("page-text-v4\x00" + u))
+	oldPath := filepath.Join(c.Dir, hex.EncodeToString(oldHash[:])+".json")
+	legacy := MakeDocument(u, "AtlasExpand sidebar", "Atlas provides repository abstractions for data access.", "http")
+	if err := fsutil.WriteJSON(oldPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		doc, err := c.Read(context.Background(), u)
+		if err != nil || doc.Title != "Atlas" || r.calls != 1 {
+			t.Fatal("contaminated title cache reused or clean result not cached", doc, err, r.calls)
+		}
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatal("migration removed original cache data", err)
+	}
+}
+
 func (r *qualityReader) Read(_ context.Context, u string) (Document, error) {
 	r.calls++
 	text := "Atlas provides repository abstractions for accessing data stores in applications."

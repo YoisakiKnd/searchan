@@ -3,7 +3,6 @@ package model
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/url"
 	"strings"
 )
@@ -37,19 +36,33 @@ func (c *Client) request(system string, data []byte) (string, map[string]string,
 	if tokens < 256 || tokens > 8192 {
 		return "", nil, nil, errors.New("MODEL_MAX_TOKENS must be 256-8192")
 	}
+	effort := c.ReasoningEffort
+	if effort != "" && effort != "none" && effort != "minimal" && effort != "low" && effort != "medium" && effort != "high" && effort != "xhigh" && effort != "max" {
+		return "", nil, nil, errors.New("invalid MODEL_REASONING_EFFORT")
+	}
+	deepseekChat := api == "chat_completions" && strings.EqualFold(u.Hostname(), "api.deepseek.com")
 	thinking := c.Thinking
 	if thinking == "auto" || thinking == "" {
 		thinking = ""
-		if api == "chat_completions" && strings.EqualFold(u.Hostname(), "api.deepseek.com") {
+		if deepseekChat {
 			thinking = "disabled"
+			if effort != "" && effort != "none" {
+				thinking = "enabled"
+			}
 		}
 	}
 	if thinking != "" && thinking != "enabled" && thinking != "disabled" && thinking != "adaptive" {
 		return "", nil, nil, errors.New("MODEL_THINKING must be auto, enabled, disabled or adaptive")
 	}
-	effort := c.ReasoningEffort
-	if effort != "" && effort != "none" && effort != "minimal" && effort != "low" && effort != "medium" && effort != "high" && effort != "xhigh" && effort != "max" {
-		return "", nil, nil, errors.New("invalid MODEL_REASONING_EFFORT")
+	if deepseekChat {
+		if thinking == "disabled" && effort != "" && effort != "none" || thinking == "enabled" && effort == "none" {
+			return "", nil, nil, errors.New("MODEL_THINKING conflicts with MODEL_REASONING_EFFORT")
+		}
+		// DeepSeek Chat uses the thinking toggle for none; its effort field
+		// controls enabled thinking and does not accept none.
+		if effort == "none" {
+			effort = ""
+		}
 	}
 	if c.ThinkingBudget != 0 && (api != "anthropic" || thinking != "enabled") {
 		return "", nil, nil, errors.New("MODEL_THINKING_BUDGET requires Anthropic enabled thinking")
@@ -167,6 +180,7 @@ type response struct {
 	Choices    []struct {
 		Message struct {
 			Content string `json:"content"`
+			Refusal string `json:"refusal"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -176,32 +190,94 @@ type response struct {
 		Status  string         `json:"status"`
 		Content []contentBlock `json:"content"`
 	} `json:"output"`
-	Content []contentBlock `json:"content"`
+	Content []contentBlock  `json:"content"`
+	Usage   json.RawMessage `json:"usage"`
+}
+
+type outputUsage struct {
+	CompletionTokens  int64 `json:"completion_tokens"`
+	OutputTokens      int64 `json:"output_tokens"`
+	CompletionDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"completion_tokens_details"`
+	OutputDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
+}
+
+// Diagnostics retain only known protocol states and bounded counters. Neither
+// arbitrary response strings nor model drafts are copied into task logs/tapes.
+func (r response) annotateOutputError(api string, e *OutputError) {
+	var usage outputUsage
+	// Optional vendor metadata must not make an otherwise valid answer fail.
+	if json.Unmarshal(r.Usage, &usage) != nil {
+		usage = outputUsage{}
+	}
+	bounded := func(n int64) int64 {
+		if n < 0 || n > 1_000_000 {
+			return 0
+		}
+		return n
+	}
+	e.finish = "unspecified"
+	switch api {
+	case "chat_completions":
+		e.api = api
+		if len(r.Choices) == 1 {
+			switch r.Choices[0].FinishReason {
+			case "stop", "length", "content_filter", "tool_calls", "function_call":
+				e.finish = r.Choices[0].FinishReason
+			}
+		}
+		e.outputTokens = bounded(usage.CompletionTokens)
+		e.reasoningTokens = bounded(usage.CompletionDetails.ReasoningTokens)
+	case "responses":
+		e.api = api
+		if r.Status == "completed" || r.Status == "incomplete" || r.Status == "failed" {
+			e.finish = r.Status
+		}
+		e.outputTokens = bounded(usage.OutputTokens)
+		e.reasoningTokens = bounded(usage.OutputDetails.ReasoningTokens)
+	case "anthropic":
+		e.api = api
+		switch r.StopReason {
+		case "end_turn", "stop_sequence", "max_tokens", "tool_use", "pause_turn", "refusal":
+			e.finish = r.StopReason
+		}
+		e.outputTokens = bounded(usage.OutputTokens)
+	}
 }
 
 func (r response) text(api string) (string, error) {
 	if len(r.Error) > 0 && string(r.Error) != "null" {
-		return "", errors.New("model returned an API error in a successful HTTP response")
+		return "", &OutputError{kind: "api", cause: "api_error", form: "unparsed"}
 	}
 	switch api {
 	case "chat_completions":
 		if len(r.Choices) != 1 {
-			return "", errors.New("model returned no unique answer")
+			return "", &OutputError{kind: "empty", cause: "answer_count", form: "unparsed"}
 		}
 		switch r.Choices[0].FinishReason {
 		case "", "stop":
 		case "length":
-			return "", errors.New("model output was truncated; check output token and thinking budgets")
+			return "", &OutputError{kind: "incomplete", cause: "token_limit", form: "unparsed"}
+		case "content_filter":
+			return "", &OutputError{kind: "refusal", cause: "content_filter", form: "unparsed"}
 		default:
-			return "", errors.New("model did not finish a text answer")
+			return "", &OutputError{kind: "protocol", cause: "unsupported_finish", form: "unparsed"}
+		}
+		// Refusal is independent of finish_reason: a stopped response can
+		// still refuse, including gateways returning content alongside it.
+		if r.Choices[0].Message.Refusal != "" {
+			return "", &OutputError{kind: "refusal", cause: "refusal", form: "unparsed"}
 		}
 		if strings.TrimSpace(r.Choices[0].Message.Content) == "" {
-			return "", errors.New("model returned no answer content; check thinking and output token budgets")
+			return "", &OutputError{kind: "empty", cause: "no_text", form: "empty"}
 		}
 		return r.Choices[0].Message.Content, nil
 	case "responses":
 		if r.Status != "completed" {
-			return "", errors.New("model response incomplete or failed; check output token and thinking budgets")
+			return "", &OutputError{kind: "incomplete", cause: "incomplete_status", form: "unparsed"}
 		}
 		var b strings.Builder
 		for _, item := range r.Output {
@@ -209,22 +285,32 @@ func (r response) text(api string) (string, error) {
 				continue
 			}
 			if item.Type != "message" || (item.Role != "assistant" && item.Role != "") || (item.Status != "completed" && item.Status != "") {
-				return "", errors.New("unexpected Responses output item")
+				return "", &OutputError{kind: "protocol", cause: "unsupported_output", form: "unparsed"}
 			}
 			for _, block := range item.Content {
 				if block.Type != "output_text" {
-					return "", errors.New("model returned a refusal or unsupported content")
+					kind := "protocol"
+					if block.Type == "refusal" {
+						kind = "refusal"
+					}
+					return "", &OutputError{kind: kind, cause: "unsupported_content", form: "unparsed"}
 				}
 				b.WriteString(block.Text)
 			}
 		}
 		if b.Len() == 0 {
-			return "", errors.New("model returned no answer content")
+			return "", &OutputError{kind: "empty", cause: "no_text", form: "empty"}
 		}
 		return b.String(), nil
 	case "anthropic":
 		if r.StopReason != "end_turn" && r.StopReason != "stop_sequence" {
-			return "", fmt.Errorf("Anthropic did not finish a text answer (stop_reason=%.64q)", r.StopReason)
+			kind, cause := "protocol", "unsupported_finish"
+			if r.StopReason == "max_tokens" {
+				kind, cause = "incomplete", "token_limit"
+			} else if r.StopReason == "refusal" {
+				kind, cause = "refusal", "refusal"
+			}
+			return "", &OutputError{kind: kind, cause: cause, form: "unparsed"}
 		}
 		var b strings.Builder
 		for _, block := range r.Content {
@@ -233,11 +319,11 @@ func (r response) text(api string) (string, error) {
 			case "text":
 				b.WriteString(block.Text)
 			default:
-				return "", errors.New("Anthropic returned unsupported content")
+				return "", &OutputError{kind: "protocol", cause: "unsupported_content", form: "unparsed"}
 			}
 		}
 		if b.Len() == 0 {
-			return "", errors.New("model returned no answer content")
+			return "", &OutputError{kind: "empty", cause: "no_text", form: "empty"}
 		}
 		return b.String(), nil
 	}

@@ -25,9 +25,11 @@ func qualityMode(ctx context.Context, args []string, out io.Writer, ambient func
 	envFile := fs.String("env-file", "", "private local env data file; never executed as shell")
 	dest := fs.String("out", "", "fresh run directory; review uses an existing directory")
 	replay := fs.String("replay", "", "prior run directory; replay search/read snapshots with the real model")
+	fixed := fs.String("fixed-evidence", "", "prior run directory; freeze final evidence, IDs, plan and reference date; model only")
 	render := fs.Bool("render", false, "render actual Typst PNGs locally")
 	typst := fs.String("typst", "", "override Typst executable for this machine")
 	label := fs.String("label", "", "human-readable run label")
+	continueUnavailable := fs.Bool("continue-on-unavailable", false, "continue batch after consecutive search outages; may waste paid model calls")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -84,9 +86,12 @@ func qualityMode(ctx context.Context, args []string, out io.Writer, ambient func
 	fmt.Fprintf(out, "Quality run: %s\n", abs)
 	// Progress stays visible; report.json is the machine-readable result. Neither
 	// the private configuration nor any raw model request is printed.
-	report, err := quality.Run(ctx, quality.Options{Suite: suite, Cases: selected, Out: abs, Replay: *replay, Render: *render, Label: *label}, env, out)
+	report, err := quality.Run(ctx, quality.Options{Suite: suite, Cases: selected, Out: abs, Replay: *replay, FixedEvidence: *fixed, Render: *render, Label: *label, ContinueOnUnavailable: *continueUnavailable}, env, out)
 	if len(report.Cases) > 0 {
 		fmt.Fprintf(out, "completed=%d failed=%d incomplete=%d p50_ms=%d p95_ms=%d; factual review pending\n", report.Completed, report.Failures, report.Incomplete, report.P50MS, report.P95MS)
+		if len(report.UnrunCases) > 0 {
+			fmt.Fprintf(out, "stopped=%s unrun=%d; unrun cases have no outputs or factual review\n", report.StoppedReason, len(report.UnrunCases))
+		}
 	}
 	return err
 }

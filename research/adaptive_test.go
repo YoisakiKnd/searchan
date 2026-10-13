@@ -170,7 +170,7 @@ func TestLateAnswerGapRecoversOnceWithinSharedModelBudget(t *testing.T) {
 						return assign(output, `{"answers_query":false,"missing":["repository definition"],"title":"Unknown","lead":{"text":"The index does not define Atlas.","evidence_ids":["e1"]},"sections":[]}`)
 					}
 					found := false
-					for _, ev := range input.(map[string]any)["evidence"].([]Evidence) {
+					for _, ev := range input.(map[string]any)["evidence"].([]modelEvidence) {
 						found = found || strings.Contains(ev.URL, "/definition")
 					}
 					if !found {

@@ -86,11 +86,20 @@ func (c *Client) Complete(ctx context.Context, system string, input, out any) er
 	}
 	content, err := wire.text(api)
 	if err != nil {
+		var invalid *OutputError
+		if errors.As(err, &invalid) {
+			wire.annotateOutputError(api, invalid)
+		}
 		return err
 	}
 	content = strings.TrimSpace(content)
 	if strings.HasPrefix(content, "```json") && strings.HasSuffix(content, "```") {
 		content = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(content, "```json"), "```"))
 	}
-	return decodeOutput(content, out)
+	err = decodeOutput(content, out)
+	var invalid *OutputError
+	if errors.As(err, &invalid) {
+		wire.annotateOutputError(api, invalid)
+	}
+	return err
 }

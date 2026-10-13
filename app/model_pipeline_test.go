@@ -38,7 +38,7 @@ func TestAllModelProtocolsRecoverAndDeliverCitedSummary(t *testing.T) {
 				}
 				body := `{"title":"Go context","lead":{"text":"Workers observe cancellation.","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}`
 				if strings.Contains(string(input), "核对 answer") {
-					body = `{"unsupported":[],"missing":[]}`
+					body = `{"unsupported":[],"missing":[],"answers_query":true}`
 				}
 				switch api {
 				case "chat_completions":

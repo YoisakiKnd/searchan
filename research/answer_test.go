@@ -39,7 +39,7 @@ func TestGenerationFailureNeverReturnsExtracts(t *testing.T) {
 }
 
 func TestVerificationFallbackUsesFreshBriefSummary(t *testing.T) {
-	for _, reason := range []string{"verification_failed", "verification_unavailable", "verification_incomplete", "verified"} {
+	for _, reason := range []string{"verification_failed", "verification_unavailable", "verification_incomplete", "verification_missing_coverage", "verification_null_coverage", "verified"} {
 		t.Run(reason, func(t *testing.T) {
 			ps, r := fixtures()
 			calls := 0
@@ -52,10 +52,14 @@ func TestVerificationFallbackUsesFreshBriefSummary(t *testing.T) {
 						return errors.New("unavailable")
 					case "verification_incomplete":
 						return assign(output, `{}`)
+					case "verification_missing_coverage":
+						return assign(output, `{"unsupported":[],"missing":[]}`)
+					case "verification_null_coverage":
+						return assign(output, `{"unsupported":[],"missing":[],"answers_query":null}`)
 					case "verified":
-						return assign(output, `{"unsupported":[],"missing":["deadline behavior remains unconfirmed"]}`)
+						return assign(output, `{"unsupported":[],"missing":["deadline behavior remains unconfirmed"],"answers_query":true}`)
 					default:
-						return assign(output, `{"unsupported":["Unsupported conclusion"],"missing":[]}`)
+						return assign(output, `{"unsupported":["Unsupported conclusion"],"missing":[],"answers_query":true}`)
 					}
 				case briefPrompt:
 					in := input.(map[string]any)
@@ -79,8 +83,13 @@ func TestVerificationFallbackUsesFreshBriefSummary(t *testing.T) {
 				return
 			}
 			want := reason
-			if reason == "verification_incomplete" {
+			if reason == "verification_incomplete" || reason == "verification_missing_coverage" || reason == "verification_null_coverage" {
 				want = "verification_unavailable"
+				if out.Stats.VerificationIssue != "incomplete_result" {
+					t.Fatal("incomplete verification lost its safe diagnostic")
+				}
+			} else if reason == "verification_unavailable" && out.Stats.VerificationIssue != "model_error" {
+				t.Fatal("model verification failure lost its safe diagnostic")
 			}
 			if out.AnswerMode != "brief_summary" || out.AnswerReason != want || calls != 3 || strings.Contains(out.Text(), "Unsupported conclusion") || !strings.Contains(out.Text(), "关键事实待确认") {
 				t.Fatalf("bad verification fallback: %+v calls=%d", out, calls)
@@ -100,7 +109,7 @@ func TestInvalidBriefSummaryFailsWithoutPublishingOriginal(t *testing.T) {
 		lm := modelFunc(func(_ context.Context, prompt string, _ any, output any) error {
 			switch prompt {
 			case verifyPrompt:
-				return assign(output, `{"unsupported":["bad assertion"],"missing":[]}`)
+				return assign(output, `{"unsupported":["bad assertion"],"missing":[],"answers_query":true}`)
 			case briefPrompt, briefRepairPrompt:
 				return assign(output, invalid)
 			default:

@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"searchan/model"
 )
 
 type Plan struct {
@@ -82,23 +84,39 @@ type RetrievedHit struct {
 	Providers []string `json:"providers"`
 }
 type Stats struct {
-	SearchCalls     int              `json:"search_calls"`
-	PagesRead       int              `json:"pages_read"`
-	ModelCalls      int              `json:"model_calls"`
-	AnswerRepairs   int              `json:"answer_repairs,omitempty"`
-	ElapsedMS       int64            `json:"elapsed_ms"`
-	StageMS         map[string]int64 `json:"stage_ms"`
-	Candidates      int              `json:"candidates"`
-	Documents       int              `json:"documents"`
-	RecoveryRounds  int              `json:"recovery_rounds"`
-	Calls           []SearchCall     `json:"calls,omitempty"`
-	ReaderCalls     int              `json:"reader_calls"`
-	FallbackReads   int              `json:"fallback_reads"`
-	RecoveryQueries []string         `json:"recovery_queries,omitempty"`
-	RecoveryTrigger string           `json:"recovery_trigger,omitempty"`
-	CoverageChecks  int              `json:"coverage_checks,omitempty"`
-	ReadingBatches  int              `json:"reading_batches,omitempty"`
-	PageReads       []PageRead       `json:"page_reads,omitempty"`
+	SearchCalls        int                     `json:"search_calls"`
+	PagesRead          int                     `json:"pages_read"`
+	ModelCalls         int                     `json:"model_calls"`
+	AnswerRepairs      int                     `json:"answer_repairs,omitempty"`
+	OutputRetries      int                     `json:"output_retries,omitempty"`
+	VerificationIssue  string                  `json:"verification_issue,omitempty"`
+	VerificationOutput *model.OutputDiagnostic `json:"verification_output,omitempty"`
+	ElapsedMS          int64                   `json:"elapsed_ms"`
+	StageMS            map[string]int64        `json:"stage_ms"`
+	Candidates         int                     `json:"candidates"`
+	Documents          int                     `json:"documents"`
+	RecoveryRounds     int                     `json:"recovery_rounds"`
+	Calls              []SearchCall            `json:"calls,omitempty"`
+	ReaderCalls        int                     `json:"reader_calls"`
+	FallbackReads      int                     `json:"fallback_reads"`
+	RecoveryQueries    []string                `json:"recovery_queries,omitempty"`
+	RecoveryTrigger    string                  `json:"recovery_trigger,omitempty"`
+	CoverageChecks     int                     `json:"coverage_checks,omitempty"`
+	ReadingBatches     int                     `json:"reading_batches,omitempty"`
+	DiscoveryReads     int                     `json:"discovery_reads,omitempty"`
+	CandidateReads     int                     `json:"candidate_reads,omitempty"`
+	CoverageCandidates []CoverageCandidate     `json:"coverage_candidates,omitempty"`
+	PageReads          []PageRead              `json:"page_reads,omitempty"`
+}
+
+// CoverageCandidate records the bounded menu offered to the coverage model.
+// Selected means an existing ID passed selection and page-budget checks;
+// page_reads records whether the read actually started and its outcome.
+type CoverageCandidate struct {
+	ID       string `json:"id"`
+	URL      string `json:"url"`
+	Origin   string `json:"origin"`
+	Selected bool   `json:"selected,omitempty"`
 }
 
 // PageRead retains bounded provenance and outcome metadata, never page text.
@@ -120,21 +138,40 @@ type SearchCall struct {
 	NewDocuments int    `json:"new_documents"`
 	ElapsedMS    int64  `json:"elapsed_ms"`
 	Error        string `json:"error,omitempty"`
+	ErrorCode    string `json:"error_code,omitempty"`
+}
+
+// Typed failures expose a fixed category without including draft text or an
+// untrusted citation ID in logs and quality artifacts.
+type answerValidationError struct{ code, message string }
+
+func (e *answerValidationError) Error() string { return e.message }
+
+func AnswerValidationCode(err error) string {
+	var validation *answerValidationError
+	if errors.As(err, &validation) {
+		return validation.code
+	}
+	var layout *briefLayoutError
+	if errors.As(err, &layout) {
+		return "brief_layout"
+	}
+	return ""
 }
 
 func ValidateAnswer(a Answer, ev []Evidence) error {
 	if strings.TrimSpace(a.Title) == "" || len(a.Title) > 240 {
-		return errors.New("answer title missing or too long")
+		return &answerValidationError{"title", "answer title missing or too long"}
 	}
 	if len(a.Sections) > 6 || len(a.Uncertainties) > 6 {
-		return errors.New("answer has too many sections")
+		return &answerValidationError{"sections", "answer has too many sections"}
 	}
 	if len(a.Missing) > 4 {
-		return errors.New("too many answer gaps")
+		return &answerValidationError{"gaps", "too many answer gaps"}
 	}
 	for _, gap := range a.Missing {
 		if len(gap) > 400 {
-			return errors.New("oversized answer gap")
+			return &answerValidationError{"gap_size", "oversized answer gap"}
 		}
 	}
 	known := map[string]bool{}
@@ -145,17 +182,17 @@ func ValidateAnswer(a Answer, ev []Evidence) error {
 	check := func(c Claim) error {
 		total += len(c.Text)
 		if strings.TrimSpace(c.Text) == "" || len(c.Text) > 1800 {
-			return errors.New("empty or oversized claim")
+			return &answerValidationError{"claim_size", "empty or oversized claim"}
 		}
 		if len(ev) > 0 && len(c.EvidenceIDs) == 0 {
-			return errors.New("factual claim is missing evidence")
+			return &answerValidationError{"missing_citation", "factual claim is missing evidence"}
 		}
 		if len(c.EvidenceIDs) > 8 {
-			return errors.New("too many citations for one claim")
+			return &answerValidationError{"citation_limit", "too many citations for one claim"}
 		}
 		for _, id := range c.EvidenceIDs {
 			if !known[id] {
-				return fmt.Errorf("unknown evidence ID %q", id)
+				return &answerValidationError{"unknown_citation", "unknown evidence ID"}
 			}
 		}
 		return nil
@@ -165,7 +202,7 @@ func ValidateAnswer(a Answer, ev []Evidence) error {
 	}
 	for _, s := range a.Sections {
 		if len(s.Heading) > 160 || len(s.Claims) > 6 {
-			return errors.New("oversized answer section")
+			return &answerValidationError{"section_size", "oversized answer section"}
 		}
 		for _, c := range s.Claims {
 			if err := check(c); err != nil {
@@ -175,20 +212,20 @@ func ValidateAnswer(a Answer, ev []Evidence) error {
 	}
 	if a.Table != nil {
 		if len(a.Table.Columns) < 2 || len(a.Table.Columns) > 4 || len(a.Table.Rows) > 8 {
-			return errors.New("table exceeds layout limits")
+			return &answerValidationError{"table_shape", "table exceeds layout limits"}
 		}
 		for _, col := range a.Table.Columns {
 			if len(col) > 120 {
-				return errors.New("table heading too long")
+				return &answerValidationError{"table_heading_size", "table heading too long"}
 			}
 		}
 		for _, row := range a.Table.Rows {
 			if len(row.Cells) != len(a.Table.Columns) {
-				return errors.New("table column mismatch")
+				return &answerValidationError{"table_columns", "table column mismatch"}
 			}
 			for _, cell := range row.Cells {
 				if len(cell) > 360 {
-					return errors.New("table cell too long")
+					return &answerValidationError{"table_cell_size", "table cell too long"}
 				}
 			}
 			if err := check(Claim{strings.Join(row.Cells, " "), row.EvidenceIDs}); err != nil {
@@ -199,11 +236,11 @@ func ValidateAnswer(a Answer, ev []Evidence) error {
 	for _, s := range a.Uncertainties {
 		total += len(s)
 		if len(s) > 600 {
-			return errors.New("uncertainty text too long")
+			return &answerValidationError{"uncertainty_size", "uncertainty text too long"}
 		}
 	}
 	if total > 12000 {
-		return errors.New("answer exceeds output budget")
+		return &answerValidationError{"answer_size", "answer exceeds output budget"}
 	}
 	return nil
 }

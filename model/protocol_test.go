@@ -27,6 +27,8 @@ func TestProtocolRequestsAndResponses(t *testing.T) {
 	}{
 		{"openai-official", "https://api.openai.com/v1/chat/completions", "auto", "", "", "low", "", chatJSON, 0},
 		{"deepseek-official", "https://api.deepseek.com/chat/completions", "auto", "", "auto", "", "", chatJSON, 0},
+		{"deepseek-effort-auto", "https://api.deepseek.com/chat/completions", "auto", "", "auto", "low", "", chatJSON, 0},
+		{"deepseek-none-auto", "https://api.deepseek.com/chat/completions", "auto", "", "auto", "none", "", chatJSON, 0},
 		{"generic-gateway", "https://gateway.example/prefix/v1/chat/completions?route=a", "auto", "", "auto", "", "max_completion_tokens", chatJSON, 0},
 		{"api-key-gateway", "https://gateway.example/deployments/model/chat/completions?api-version=2024-10-21", "auto", "api-key", "auto", "", "max_completion_tokens", chatJSON, 0},
 		{"gateway-deepseek-thinking", "https://gateway.example/chat/completions", "chat_completions", "", "enabled", "low", "", chatJSON, 0},
@@ -102,6 +104,12 @@ func TestProtocolRequestsAndResponses(t *testing.T) {
 						if tt.name == "deepseek-official" && p["thinking"].(map[string]any)["type"] != "disabled" {
 							t.Fatal("DeepSeek thinking still implicit")
 						}
+						if tt.name == "deepseek-effort-auto" && (p["thinking"].(map[string]any)["type"] != "enabled" || p["reasoning_effort"] != "low") {
+							t.Fatal("explicit effort was silently disabled")
+						}
+						if tt.name == "deepseek-none-auto" && (p["thinking"].(map[string]any)["type"] != "disabled" || p["reasoning_effort"] != nil) {
+							t.Fatal("none was sent as an unsupported DeepSeek effort")
+						}
 						if (tt.name == "openai-official" || tt.name == "generic-gateway") && p["thinking"] != nil {
 							t.Fatal("DeepSeek parameter leaked to generic endpoint")
 						}
@@ -147,6 +155,16 @@ func TestInvalidProtocolOptionsFailBeforeRequest(t *testing.T) {
 		func(c *Client) { c.API = "responses"; c.Thinking = "adaptive" },
 		func(c *Client) { c.API = "responses"; c.Thinking = "disabled"; c.ReasoningEffort = "high" },
 		func(c *Client) { c.Endpoint = "https://api.openai.com/v1/chat/completions"; c.Thinking = "disabled" },
+		func(c *Client) {
+			c.Endpoint = "https://api.deepseek.com/chat/completions"
+			c.Thinking = "disabled"
+			c.ReasoningEffort = "high"
+		},
+		func(c *Client) {
+			c.Endpoint = "https://api.deepseek.com/chat/completions"
+			c.Thinking = "enabled"
+			c.ReasoningEffort = "none"
+		},
 	} {
 		c := &Client{Endpoint: "https://gateway.example/custom", Model: "m", Client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) { t.Fatal("invalid config caused request"); return nil, nil })}}
 		modify(c)

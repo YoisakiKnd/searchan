@@ -7,31 +7,39 @@ import (
 	"strings"
 )
 
-// OutputError exposes a bounded category and an allowlisted schema field, never
-// the model draft or the decoder's arbitrary value/field descriptions.
+// OutputError exposes bounded JSON/protocol categories and an allowlisted
+// schema field, never drafts, vendor stop strings or decoder descriptions.
 type OutputError struct {
-	kind, field string
-	offset      int64
-	form        string
-	bytes       int
+	kind, field                   string
+	cause                         string
+	offset                        int64
+	form                          string
+	bytes                         int
+	api, finish                   string
+	outputTokens, reasoningTokens int64
 }
 
 type OutputDiagnostic struct {
-	Kind   string `json:"kind"`
-	Field  string `json:"field,omitempty"`
-	Offset int64  `json:"offset,omitempty"`
-	Form   string `json:"form"`
-	Bytes  int    `json:"bytes"`
+	Kind            string `json:"kind"`
+	Cause           string `json:"cause,omitempty"`
+	Field           string `json:"field,omitempty"`
+	Offset          int64  `json:"offset,omitempty"`
+	Form            string `json:"form"`
+	Bytes           int    `json:"bytes"`
+	API             string `json:"api,omitempty"`
+	Finish          string `json:"finish,omitempty"`
+	OutputTokens    int64  `json:"output_tokens,omitempty"`
+	ReasoningTokens int64  `json:"reasoning_tokens,omitempty"`
 }
 
 func (e *OutputError) Diagnostic() OutputDiagnostic {
-	return OutputDiagnostic{e.kind, e.field, e.offset, e.form, e.bytes}
+	return OutputDiagnostic{Kind: e.kind, Cause: e.cause, Field: e.field, Offset: e.offset, Form: e.form, Bytes: e.bytes, API: e.api, Finish: e.finish, OutputTokens: e.outputTokens, ReasoningTokens: e.reasoningTokens}
 }
 
 func (e *OutputError) Kind() string  { return e.kind }
 func (e *OutputError) Field() string { return e.field }
 func (e *OutputError) Error() string {
-	return fmt.Sprintf("model JSON output invalid (kind=%s, field=%s, offset=%d)", e.kind, e.field, e.offset)
+	return fmt.Sprintf("model output invalid (kind=%s, cause=%s, field=%s, offset=%d, bytes=%d, api=%s, finish=%s, output_tokens=%d, reasoning_tokens=%d)", e.kind, e.cause, e.field, e.offset, e.bytes, e.api, e.finish, e.outputTokens, e.reasoningTokens)
 }
 
 func decodeOutput(content string, out any) (result error) {
@@ -63,7 +71,11 @@ func decodeOutput(content string, out any) (result error) {
 	}
 	var syntax *json.SyntaxError
 	if errors.As(err, &syntax) {
-		return &OutputError{kind: "syntax", offset: syntax.Offset}
+		cause := "invalid_token"
+		if syntax.Error() == "unexpected end of JSON input" {
+			cause = "unexpected_end"
+		}
+		return &OutputError{kind: "syntax", cause: cause, offset: syntax.Offset}
 	}
 	var mismatch *json.UnmarshalTypeError
 	if errors.As(err, &mismatch) {

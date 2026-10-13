@@ -151,7 +151,7 @@ func TestEngineSnippetFallbackAndAllFailure(t *testing.T) {
 		return search.Response{}, errors.New("failure")
 	}
 	e, _ = New(Config{Providers: []search.Provider{p}, Reader: r, Model: lm})
-	if _, err := e.Run(context.Background(), "query"); !errors.Is(err, ErrNoEvidence) {
+	if _, err := e.Run(context.Background(), "query"); !errors.Is(err, ErrSearchUnavailable) {
 		t.Fatal("all failures were hidden")
 	}
 }
@@ -207,7 +207,7 @@ func TestQueryCoverageAndReservedRecoveryPages(t *testing.T) {
 				case prompt == briefPrompt && repair:
 					return assign(out, `{"title":"Brief","lead":{"text":"Context reference.","evidence_ids":["e1"]},"sections":[{"heading":"Extra","claims":[]}]}`)
 				case prompt == verifyPrompt:
-					return assign(out, `{"unsupported":["context reference needs qualification"],"missing":[]}`)
+					return assign(out, `{"unsupported":["context reference needs qualification"],"missing":[],"answers_query":true}`)
 				case strings.Contains(prompt, "制定网页搜索计划"):
 					return assign(out, `{"intent":"compare","queries":["context","cancel"],"aspects":["context","cancel"]}`)
 				case strings.Contains(prompt, "是否足以回答"):

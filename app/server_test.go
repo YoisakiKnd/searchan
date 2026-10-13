@@ -245,7 +245,7 @@ func TestAIAnswerPolicyDelivery(t *testing.T) {
 				cfg.VerifyWithModel = true
 				cfg.Model = testModelFunc(func(ctx context.Context, prompt string, input, output any) error {
 					if strings.HasPrefix(prompt, "核对 answer") {
-						return json.Unmarshal([]byte(`{"unsupported":["bad assertion"],"missing":[]}`), output)
+						return json.Unmarshal([]byte(`{"unsupported":["bad assertion"],"missing":[],"answers_query":true}`), output)
 					}
 					return (testModel{}).Complete(ctx, prompt, input, output)
 				})

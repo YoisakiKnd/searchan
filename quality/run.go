@@ -23,20 +23,25 @@ import (
 )
 
 type Options struct {
-	Suite  Suite
-	Cases  []Case
-	Out    string
-	Replay string
-	Render bool
-	Label  string
+	Suite                 Suite
+	Cases                 []Case
+	Out                   string
+	Replay                string
+	FixedEvidence         string
+	Render                bool
+	Label                 string
+	ContinueOnUnavailable bool
 }
 
 type Result struct {
 	ID                string                   `json:"id"`
 	Query             string                   `json:"query"`
 	State             string                   `json:"state"`
+	ValidationCode    string                   `json:"validation_code,omitempty"`
 	Error             string                   `json:"error,omitempty"`
 	AnswerHash        string                   `json:"answer_hash"`
+	EvidenceInputHash string                   `json:"evidence_input_hash,omitempty"`
+	SourceAnswerHash  string                   `json:"source_answer_hash,omitempty"`
 	AnswerMode        string                   `json:"answer_mode,omitempty"`
 	AnswersQuery      *bool                    `json:"answers_query,omitempty"`
 	FormatValid       bool                     `json:"format_valid"`
@@ -69,6 +74,10 @@ type Report struct {
 	Incomplete     int               `json:"incomplete"`
 	P50MS          int64             `json:"p50_ms"`
 	P95MS          int64             `json:"p95_ms"`
+	SelectedCases  []string          `json:"selected_cases,omitempty"`
+	UnrunCases     []string          `json:"unrun_cases,omitempty"`
+	StoppedReason  string            `json:"stopped_reason,omitempty"`
+	BatchPolicy    string            `json:"batch_policy,omitempty"`
 }
 
 type Budget struct {
@@ -113,9 +122,20 @@ func executableHash() (string, error) {
 
 func Run(ctx context.Context, opt Options, env func(string) string, progress io.Writer) (Report, error) {
 	report := Report{Version: 1, Mode: "live", Label: opt.Label, Started: time.Now().UTC(), SuiteHash: hashJSON(opt.Suite), GoVersion: runtime.Version(), Settings: map[string]string{}}
+	report.BatchPolicy = "stop_after_2_consecutive_search_unavailable"
+	if opt.ContinueOnUnavailable {
+		report.BatchPolicy = "continue_after_search_unavailable"
+	}
 	if opt.Replay != "" {
 		report.Mode = "snapshot-model-live"
 		report.Settings["REPLAY_PLANNING"] = "recorded-final-plan"
+	}
+	if opt.FixedEvidence != "" {
+		report.Mode = "evidence-model-live"
+		report.Settings["EVIDENCE_REFERENCE_TIME"] = "recorded-generated-at"
+	}
+	if opt.Replay != "" && opt.FixedEvidence != "" {
+		return report, errors.New("replay and fixed evidence are mutually exclusive")
 	}
 	if len(opt.Cases) == 0 || len(opt.Cases) > 100 || opt.Out == "" {
 		return report, errors.New("invalid quality run options")
@@ -130,6 +150,42 @@ func Run(ctx context.Context, opt Options, env func(string) string, progress io.
 			return report, errors.New("case selection does not match suite")
 		}
 		seen[c.ID] = true
+		report.SelectedCases = append(report.SelectedCases, c.ID)
+	}
+	// Validate and hash every fixed input before any model request. A changed,
+	// missing or incomplete source run cannot silently become a new baseline.
+	fixed := map[string]research.SynthesisInput{}
+	sourceHashes := map[string]string{}
+	if opt.FixedEvidence != "" {
+		var source Report
+		if err := readJSON(filepath.Join(opt.FixedEvidence, "report.json"), 4<<20, &source); err != nil {
+			return report, err
+		}
+		if source.Version != 1 || source.SuiteHash != report.SuiteHash || len(source.Cases) > 100 {
+			return report, errors.New("fixed evidence suite does not match")
+		}
+		for _, c := range opt.Cases {
+			var old research.Output
+			if err := readJSON(filepath.Join(opt.FixedEvidence, c.ID, "output.json"), 2<<20, &old); err != nil {
+				return report, err
+			}
+			hash := hashJSON(old)
+			matches := 0
+			for _, entry := range source.Cases {
+				if entry.ID != c.ID {
+					continue
+				}
+				matches++
+				if entry.Query != c.Query || entry.State != "completed" || !entry.SnapshotComplete || entry.SnapshotMisses != 0 || entry.AnswerHash != hash {
+					return report, errors.New("fixed evidence source is incomplete, changed or mismatched")
+				}
+			}
+			if old.Query != c.Query || matches != 1 {
+				return report, errors.New("fixed evidence source is incomplete, changed or mismatched")
+			}
+			fixed[c.ID] = research.SynthesisInput{Query: old.Query, Plan: old.Plan, Evidence: old.Evidence, GeneratedAt: old.GeneratedAt}
+			sourceHashes[c.ID] = hash
+		}
 	}
 	// Never persist the entire environment. Endpoint hashes identify endpoint
 	// changes without writing credentials embedded in a trusted endpoint URL.
@@ -155,6 +211,11 @@ func Run(ctx context.Context, opt Options, env func(string) string, progress io.
 	if missingModel {
 		return report, errors.New("quality requires MODEL_ENDPOINT and MODEL_NAME; provide -env-file")
 	}
+	for _, in := range fixed {
+		if err := in.Validate(cfg.MaxEvidence); err != nil {
+			return report, err
+		}
+	}
 	report.Budget = Budget{cfg.Providers, cfg.MaxSearchCalls, cfg.MaxPages, cfg.MaxEvidence, cfg.SearchConcurrency, cfg.ReadConcurrency, cfg.Timeout.String(), cfg.ResearchTimeout.String(), cfg.SearchTimeout.String(), cfg.ReadTimeout.String(), cfg.ModelTimeout.String(), cfg.PlanningTimeout.String(), cfg.PlanWithModel, cfg.VerifyWithModel}
 	if err := os.MkdirAll(filepath.Dir(opt.Out), 0700); err != nil {
 		return report, err
@@ -165,7 +226,7 @@ func Run(ctx context.Context, opt Options, env func(string) string, progress io.
 	if err := fsutil.WriteJSON(filepath.Join(opt.Out, "suite.json"), opt.Suite); err != nil {
 		return report, err
 	}
-	reviews := ReviewFile{Version: 1}
+	reviews := ReviewFile{Version: 2}
 	persist := func() error {
 		updateSummary(&report)
 		if err := fsutil.WriteJSON(filepath.Join(opt.Out, "report.json"), report); err != nil {
@@ -176,7 +237,8 @@ func Run(ctx context.Context, opt Options, env func(string) string, progress io.
 	if err := persist(); err != nil {
 		return report, err
 	}
-	for _, c := range opt.Cases {
+	consecutiveUnavailable := 0
+	for caseIndex, c := range opt.Cases {
 		if ctx.Err() != nil {
 			return report, ctx.Err()
 		}
@@ -221,10 +283,24 @@ func Run(ctx context.Context, opt Options, env func(string) string, progress io.
 		start := time.Now()
 		taskCtx, stopTask := context.WithTimeout(ctx, rt.Config.Timeout)
 		researchCtx, stopResearch := context.WithTimeout(taskCtx, rt.Config.ResearchTimeout)
-		output, runErr := rt.Engine.Run(researchCtx, c.Query)
+		var output research.Output
+		var runErr error
+		if opt.FixedEvidence != "" {
+			output, runErr = rt.Engine.Synthesize(researchCtx, fixed[c.ID])
+		} else {
+			output, runErr = rt.Engine.Run(researchCtx, c.Query)
+		}
 		stopResearch()
 		tape.SetPlan(output.Plan)
-		result := Result{ID: c.ID, Query: c.Query, State: "completed", Error: ErrorCode(runErr), AnswerHash: hashJSON(output), AnswerMode: output.AnswerMode, AnswersQuery: output.Answer.AnswersQuery, FormatValid: research.ValidateAnswer(output.Answer, output.Evidence) == nil, Stats: output.Stats, SnapshotComplete: tape.Snapshot().Complete, SnapshotMisses: tape.Misses()}
+		result := Result{ID: c.ID, Query: c.Query, State: "completed", Error: ErrorCode(runErr), ValidationCode: research.AnswerValidationCode(runErr), AnswerHash: hashJSON(output), AnswerMode: output.AnswerMode, AnswersQuery: output.Answer.AnswersQuery, FormatValid: research.ValidateAnswer(output.Answer, output.Evidence) == nil, Stats: output.Stats, SnapshotComplete: tape.Snapshot().Complete, SnapshotMisses: tape.Misses()}
+		if opt.FixedEvidence != "" {
+			result.EvidenceInputHash, result.SourceAnswerHash = hashJSON(fixed[c.ID]), sourceHashes[c.ID]
+			if err := fsutil.WriteJSON(filepath.Join(dir, "synthesis_input.json"), fixed[c.ID]); err != nil {
+				stopTask()
+				rt.Close()
+				return report, err
+			}
+		}
 		result.LiveModelCalls = tape.LiveModelCalls()
 		result.ModelErrors = tape.ModelErrors()
 		result.ModelOutputIssues = tape.ModelOutputIssues()
@@ -269,10 +345,25 @@ func Run(ctx context.Context, opt Options, env func(string) string, progress io.
 		}
 		report.Cases = append(report.Cases, result)
 		reviews.Cases = append(reviews.Cases, newReview(c, output, result.AnswerHash))
+		if errors.Is(runErr, research.ErrSearchUnavailable) {
+			consecutiveUnavailable++
+		} else {
+			// A successful search with no evidence is still an available service.
+			// Do not let unrelated content/model failures trip this batch policy.
+			consecutiveUnavailable = 0
+		}
+		stopBatch := !opt.ContinueOnUnavailable && consecutiveUnavailable >= 2 && caseIndex+1 < len(opt.Cases)
+		if stopBatch {
+			report.StoppedReason = "consecutive_search_unavailable"
+			report.UnrunCases = append([]string(nil), report.SelectedCases[caseIndex+1:]...)
+		}
 		if err := persist(); err != nil {
 			return report, err
 		}
-		fmt.Fprintf(progress, "  %s error=%s model=%d search=%d read=%d images=%d\n", result.State, result.Error, result.Stats.ModelCalls, result.Stats.SearchCalls, result.Stats.PagesRead, len(result.Images))
+		fmt.Fprintf(progress, "  %s error=%s validation=%s model=%d search=%d read=%d images=%d\n", result.State, result.Error, result.ValidationCode, result.Stats.ModelCalls, result.Stats.SearchCalls, result.Stats.PagesRead, len(result.Images))
+		if stopBatch {
+			return report, errors.New("quality run stopped after two consecutive search provider outages; remaining cases were not run; inspect report.json")
+		}
 	}
 	if report.Failures+report.Incomplete > 0 {
 		return report, errors.New("quality run contains failed or incomplete cases; inspect report.json")

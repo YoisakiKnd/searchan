@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
+	"net"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -16,10 +18,11 @@ import (
 
 type hit struct {
 	search.Result
-	votes   map[string]float64
-	fusion  float64
-	queries []string
-	pageKey string
+	votes      map[string]float64
+	fusion     float64
+	queries    []string
+	queryRanks map[string]int
+	pageKey    string
 }
 type searchPair struct {
 	provider int
@@ -30,13 +33,14 @@ type retrieval struct {
 	attempted map[searchPair]bool
 	counts    []int
 	paused    []bool
+	failures  []uint8
 	hits      []hit
 	indices   map[string]int
 	stats     *Stats
 }
 
 func newRetrieval(e *Engine, stats *Stats) *retrieval {
-	return &retrieval{engine: e, stats: stats, attempted: map[searchPair]bool{}, counts: make([]int, len(e.cfg.Providers)), paused: make([]bool, len(e.cfg.Providers)), indices: map[string]int{}}
+	return &retrieval{engine: e, stats: stats, attempted: map[searchPair]bool{}, counts: make([]int, len(e.cfg.Providers)), paused: make([]bool, len(e.cfg.Providers)), failures: make([]uint8, len(e.cfg.Providers)), indices: map[string]int{}}
 }
 
 func queryKey(q string) string { return strings.ToLower(strings.Join(strings.Fields(q), " ")) }
@@ -145,6 +149,16 @@ func (s *retrieval) search(ctx context.Context, queries []string, budget int) []
 		}
 		if pauseProvider(c.result.err) {
 			s.paused[j.provider] = true
+		} else if c.result.started && unavailableProvider(c.result.err) {
+			// One transient failure may recover on the next distinct query.
+			// Two consecutive network/server failures pause this provider for
+			// this task, including recovery; other tasks start with a clean ledger.
+			s.failures[j.provider]++
+			if s.failures[j.provider] >= 2 {
+				s.paused[j.provider] = true
+			}
+		} else if c.result.started {
+			s.failures[j.provider] = 0
 		}
 	}
 	var warnings []string
@@ -155,6 +169,7 @@ func (s *retrieval) search(ctx context.Context, queries []string, budget int) []
 			s.stats.SearchCalls++
 		}
 		if r.err != nil {
+			call.ErrorCode = search.FailureCode(r.err)
 			call.Error = reader.Clip(r.err.Error(), 256)
 			warnings = append(warnings, fmt.Sprintf("%s 检索失败：%s", name, call.Error))
 		} else {
@@ -193,6 +208,12 @@ func (s *retrieval) search(ctx context.Context, queries []string, budget int) []
 					}
 				}
 				h := &s.hits[idx]
+				if h.queryRanks == nil {
+					h.queryRanks = map[string]int{}
+				}
+				if old := h.queryRanks[jobs[i].key]; old == 0 || rank+1 < old {
+					h.queryRanks[jobs[i].key] = rank + 1
+				}
 				if !contains(h.queries, jobs[i].key) {
 					h.queries = append(h.queries, jobs[i].key)
 				}
@@ -262,27 +283,36 @@ func pauseProvider(err error) bool {
 	return errors.Is(err, search.ErrBlocked) || (errors.As(err, &he) && (he.StatusCode == 401 || he.StatusCode == 403 || he.StatusCode == 429))
 }
 
+func unavailableProvider(err error) bool {
+	var network net.Error
+	var status *search.HTTPError
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &network) || (errors.As(err, &status) && status.StatusCode >= 500 && status.StatusCode <= 599)
+}
+
 func rankHits(plan Plan, hits []hit, attempted map[string]bool, limit int) []hit {
 	if limit <= 0 {
 		return nil
 	}
 	query := ""
-	var entities []string
+	entities := relevanceEntities(plan)
 	if len(plan.Queries) > 0 {
 		query = plan.Queries[0]
-		entities = queryEntities(query)
 	}
 	query += " " + strings.Join(plan.focus, " ")
+	overviews := overviewTargets(plan)
 	l := newLexical(query, plan.Aspects, plan.Queries)
 	scratch := make([]uint16, len(l.terms))
 	type candidate struct {
-		hit    hit
-		vector lexicalVector
-		domain string
-		score  float64
+		hit       hit
+		vector    lexicalVector
+		domain    string
+		score     float64
+		overview  uint8
+		queryMask uint8
 	}
 	candidates := make([]candidate, 0, len(hits))
 	vectors := make([]lexicalVector, 0, len(hits))
+	previews := make([]string, 0, len(hits))
 	peakFusion := 0.0
 	for _, h := range hits {
 		key := h.pageKey
@@ -296,7 +326,9 @@ func rankHits(plan Plan, hits []hit, attempted map[string]bool, limit int) []hit
 		if preview == "" {
 			preview = reader.Clip(h.Content, 1400)
 		}
-		v := l.vector(h.Title+" "+h.Title+" "+reader.Clip(preview, 1600), scratch)
+		text := h.Title + " " + h.Title + " " + reader.Clip(preview, 1600)
+		v := l.vector(text, scratch)
+		previews = append(previews, text)
 		candidates = append(candidates, candidate{hit: h, vector: v, domain: domain(h.URL)})
 		vectors = append(vectors, v)
 		peakFusion = math.Max(peakFusion, h.fusion)
@@ -306,18 +338,76 @@ func rankHits(plan Plan, hits []hit, attempted map[string]bool, limit int) []hit
 	for _, v := range scores {
 		peakLexical = math.Max(peakLexical, v)
 	}
+	// Normalize each query separately. Chinese unigram/bigram overlap must not
+	// drown an English documentation query simply because it has fewer terms.
+	// This rewards relevance, never publisher authenticity. Work stays bounded
+	// by the existing candidate and query limits, without retaining page vectors.
+	queryScores := make([]float64, len(candidates))
+	for qi, q := range plan.Queries[:min(4, len(plan.Queries))] {
+		local := newLexical(q, nil, nil)
+		scratch := make([]uint16, len(local.terms))
+		vv := make([]lexicalVector, len(previews))
+		for i, text := range previews {
+			vv[i] = local.vector(text, scratch)
+		}
+		ss := local.scores(vv)
+		peak := 0.0
+		for _, score := range ss {
+			peak = math.Max(peak, score)
+		}
+		if peak == 0 {
+			continue
+		}
+		for i, score := range ss {
+			normalized := score / peak
+			queryScores[i] = math.Max(queryScores[i], normalized)
+			if normalized >= .65 {
+				candidates[i].queryMask |= 1 << qi
+			}
+		}
+	}
 	for i := range candidates {
-		candidates[i].score = .65*scores[i]/math.Max(peakLexical, 1e-9) + .35*candidates[i].hit.fusion/math.Max(peakFusion, 1e-9)
+		candidates[i].score = .15*scores[i]/math.Max(peakLexical, 1e-9) + .5*queryScores[i] + .35*candidates[i].hit.fusion/math.Max(peakFusion, 1e-9)
+		if len(plan.Queries) == 0 {
+			candidates[i].score += .5 * scores[i] / math.Max(peakLexical, 1e-9)
+		}
 		if len(entities) > 0 {
 			h := candidates[i].hit
 			if matchesEntities(h.Title+" "+h.URL+" "+h.Snippet+" "+reader.Clip(h.Content, 1600), entities) {
 				candidates[i].score += 1
 			}
 		}
+		var titledSides uint8
+		if len(overviews) == 2 {
+			for oi, overview := range overviews {
+				if mentionsEntity(candidates[i].hit.Title, overview) {
+					titledSides |= 1 << oi
+				}
+			}
+			// A document devoted to one named side need not put its name in
+			// the final URL segment (API manuals and /orm/ are common shapes).
+			// Comparison articles naming both sides do not consume these slots.
+			if titledSides == 1 || titledSides == 2 {
+				candidates[i].overview |= titledSides
+			}
+		}
+		for oi, overview := range overviews {
+			fit := overviewFit(overview, candidates[i].hit.URL, candidates[i].hit.Title)
+			if fit > 0 {
+				candidates[i].overview |= 1 << oi
+				candidates[i].score += fit
+				lookup := queryKey(overviewQuery(overview))
+				if contains(candidates[i].hit.queries, lookup) {
+					candidates[i].score += .65
+				}
+			}
+		}
 	}
 	used := make([]bool, len(candidates))
 	domains := map[string]int{}
 	covered := uint8(0)
+	coveredOverviews := uint8(0)
+	coveredQueries := uint8(0)
 	queries := map[string]bool{}
 	out := make([]hit, 0, min(limit, len(candidates)))
 	for len(out) < limit {
@@ -339,6 +429,10 @@ func rankHits(plan Plan, hits []hit, attempted map[string]bool, limit int) []hit
 				}
 			}
 			score := c.score + focus + .12*float64(bits.OnesCount8(c.vector.mask&^covered)) + .08*float64(novel) - .1*float64(domains[c.domain])
+			score += .25 * float64(bits.OnesCount8(c.queryMask&^coveredQueries))
+			if len(overviews) == 2 && c.overview&^coveredOverviews != 0 {
+				score += .7 // reserve attention for each side, not two mirrors of one
+			}
 			if score > value {
 				best, value = i, score
 			}
@@ -350,10 +444,62 @@ func rankHits(plan Plan, hits []hit, attempted map[string]bool, limit int) []hit
 		c := candidates[best]
 		out = append(out, c.hit)
 		covered |= c.vector.mask
+		coveredOverviews |= c.overview
+		coveredQueries |= c.queryMask
 		domains[c.domain]++
 		for _, q := range c.hit.queries {
 			queries[q] = true
 		}
 	}
 	return out
+}
+
+// A focused project landing page is a useful introduction candidate. This is
+// page-shape relevance only: neither a matching URL nor "official" in a title
+// authenticates the publisher. Body validation and citation checks still apply.
+func overviewTargets(plan Plan) []string {
+	if len(plan.Queries) == 0 || needsFresh(plan) || (plan.Intent != "compare" && !introductoryQuery(plan.Queries[0])) {
+		return nil
+	}
+	entities := discoveryEntities(plan)
+	if plan.Intent == "compare" {
+		if len(entities) != 2 {
+			return nil
+		}
+		return entities
+	}
+	if len(entities) == 1 {
+		return entities
+	}
+	return nil
+}
+
+var entitySeparators = strings.NewReplacer("-", "", "_", "", " ", "")
+
+func overviewFit(target, rawURL, title string) float64 {
+	if target == "" || !mentionsEntity(title, target) {
+		return 0
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" {
+		return 0
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "x.com", "www.x.com", "twitter.com", "www.twitter.com", "facebook.com", "www.facebook.com", "instagram.com", "www.instagram.com", "youtube.com", "www.youtube.com":
+		return 0 // a social profile path is not a project overview
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) > 3 || len(parts) == 0 {
+		return 0
+	}
+	key := func(s string) string {
+		return strings.ToLower(entitySeparators.Replace(s))
+	}
+	if key(parts[len(parts)-1]) == key(target) {
+		if len(parts) <= 2 {
+			return .6
+		}
+		return .4
+	}
+	return 0
 }

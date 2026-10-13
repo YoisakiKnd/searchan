@@ -20,7 +20,7 @@ func TestTelegramManagementAndRegistrationPayload(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/getMe"):
-			fmt.Fprint(w, `{"ok":true,"result":{"id":123,"is_bot":true,"username":"searchan_bot"}}`)
+			fmt.Fprint(w, `{"ok":true,"result":{"id":123,"is_bot":true,"username":"searchan_bot","can_join_groups":true,"can_read_all_group_messages":true}}`)
 		case strings.HasSuffix(r.URL.Path, "/getWebhookInfo"):
 			fmt.Fprint(w, `{"ok":true,"result":{"url":"https://bot.example.org/webhooks/telegram","pending_update_count":2}}`)
 		case strings.HasSuffix(r.URL.Path, "/setWebhook"):
@@ -44,7 +44,7 @@ func TestTelegramManagementAndRegistrationPayload(t *testing.T) {
 	}))
 	defer server.Close()
 	bot := &Telegram{Token: "private-test-token", Endpoint: server.URL, WebhookSecret: strings.Repeat("s", 32), Client: server.Client()}
-	if identity, err := bot.GetMe(context.Background()); err != nil || identity.Username != "searchan_bot" {
+	if identity, err := bot.GetMe(context.Background()); err != nil || identity.Username != "searchan_bot" || !identity.CanJoinGroups || !identity.CanReadAllGroupMessages {
 		t.Fatal(identity, err)
 	}
 	if info, err := bot.WebhookInfo(context.Background()); err != nil || info.Pending != 2 {
@@ -137,6 +137,39 @@ func TestTelegramRejectsCommandsForOtherBots(t *testing.T) {
 		event, err := bot.DecodeWebhook(req)
 		if err != nil || (event.ID != "") != test.accept {
 			t.Fatal(test, event, err)
+		}
+	}
+}
+
+func TestTelegramLeadingMentionSearchKeepsOtherChatTextPassive(t *testing.T) {
+	bot := &Telegram{WebhookSecret: "webhook", Username: "searchan_bot"}
+	for _, tt := range []struct {
+		text, want string
+		ignored    bool
+	}{
+		{"@searchan_bot Spring Data 简介", "/search Spring Data 简介", false},
+		{"  @SEARCHAN_BOT\nGo context 怎么取消？ ", "/search Go context 怎么取消？", false},
+		{"@searchan_bot /deep PostgreSQL 隔离级别", "/deep PostgreSQL 隔离级别", false},
+		{"@searchan_bot", "/help", false},
+		{"@other_bot 查资料", "", true},
+		{"@searchan_bot /search@other_bot 查资料", "", true},
+		{"聊天里提到 @searchan_bot", "聊天里提到 @searchan_bot", false},
+		{"Spring Data 是什么", "Spring Data 是什么", false},
+	} {
+		raw, _ := json.Marshal(map[string]any{"update_id": 2, "message": map[string]any{"message_id": 3, "message_thread_id": 5, "text": tt.text, "from": map[string]int{"id": 42}, "chat": map[string]int{"id": 123}}})
+		req := httptest.NewRequest("POST", "/", strings.NewReader(string(raw)))
+		req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "webhook")
+		event, err := bot.DecodeWebhook(req)
+		if err != nil || (event.ID == "") != tt.ignored || event.Text != tt.want {
+			t.Fatalf("mention routing %q: %+v %v", tt.text, event, err)
+		}
+		if !tt.ignored && event.Target.ThreadID != 5 {
+			t.Fatal("lost forum topic")
+		}
+		if tt.want == tt.text {
+			if _, ok := ParseCommand(event.Text); ok {
+				t.Fatal("ordinary chat triggered search")
+			}
 		}
 	}
 }

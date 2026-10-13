@@ -20,14 +20,15 @@ for task_arch in amd64 arm64; do
     -ldflags="-s -w -X main.version=$task_version -X main.commit=$task_revision" \
     -o "$task_bundle/bin/searchan" ./cmd/searchan
   cp scripts/install-linux.sh scripts/admin-linux.sh "$task_bundle/scripts/"
-  cp deploy/searchan.service deploy/Caddyfile.native "$task_bundle/deploy/"
+  cp deploy/searchan.service deploy/Caddyfile.native deploy/DOCKER.md "$task_bundle/deploy/"
   cp .env.example DEPLOYMENT.md "$task_bundle/"
-  cp README.md CHANGELOG.md QUALITY_EVALUATION.md QUALITY_BASELINE.md QUALITY_ITERATION_02.md QUALITY_ITERATION_03.md SEARCH_REVIEW.md "$task_bundle/"
+  cp README.md CHANGELOG.md PLAN.md RELEASE_READINESS.md QUALITY_EVALUATION.md QUALITY_BASELINE.md QUALITY_ITERATION_*.md SEARCH_REVIEW.md "$task_bundle/"
   cp quality/cases.json "$task_bundle/quality/"
   printf '%s\n' "$task_version" > "$task_bundle/RELEASE_VERSION"
   printf '{"version":"%s","commit":"%s","go":"%s","os":"linux","arch":"%s"}\n' \
     "$task_version" "$task_revision" "$task_go_version" "$task_arch" > "$task_bundle/BUILD_INFO.json"
-  tar -czf "$task_output/$task_name.tar.gz" -C "$task_work" "$task_name"
+  # macOS tar otherwise adds AppleDouble sidecars to Linux bundles.
+  COPYFILE_DISABLE=1 tar -czf "$task_output/$task_name.tar.gz" -C "$task_work" "$task_name"
 done
 (
   cd "$task_output"

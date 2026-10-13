@@ -29,6 +29,21 @@ type Document struct {
 	Hash      string    `json:"hash"`
 	Method    string    `json:"method"`
 	Truncated bool      `json:"truncated,omitempty"`
+	Headings  []Heading `json:"headings,omitempty"`
+	Links     []Link    `json:"links,omitempty"` // bounded discovery hints, never evidence
+}
+
+// Heading locates visible h1–h6 text inside Document.Text by byte offset.
+// Offsets are hints for passage boundaries, not statements of authority.
+type Heading struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+	Level int `json:"level"`
+}
+
+type Link struct {
+	URL  string `json:"url"`
+	Text string `json:"text"`
 }
 
 type Reader interface {
@@ -97,6 +112,9 @@ func PublicIP(addr netip.Addr) bool {
 }
 
 func publicDial(ctx context.Context, network, address string) (net.Conn, error) {
+	// DNS and every address attempt share one budget, as with net.Dialer.
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return nil, err
@@ -105,24 +123,8 @@ func publicDial(ctx context.Context, network, address string) (net.Conn, error) 
 	if err != nil {
 		return nil, err
 	}
-	if len(ips) == 0 {
-		return nil, errors.New("hostname has no IP addresses")
-	}
-	for _, ip := range ips {
-		if !PublicIP(ip) {
-			return nil, errors.New("hostname resolves to non-public address")
-		}
-	}
 	dialer := net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
-	var last error
-	for _, ip := range ips {
-		conn, err := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		if err == nil {
-			return conn, nil
-		}
-		last = err
-	}
-	return nil, last
+	return dialPublicIPs(ctx, network, port, ips, dialer.DialContext, 300*time.Millisecond)
 }
 
 func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
@@ -153,6 +155,8 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 	lr := &io.LimitedReader{R: res.Body, N: MaxBody + 1}
 	var title, text string
 	var truncated bool
+	var links []Link
+	var headings []Heading
 	if strings.Contains(ct, "text/plain") {
 		data, readErr := io.ReadAll(io.LimitReader(lr, MaxText+1))
 		if readErr != nil {
@@ -161,7 +165,7 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 		text = Clip(strings.TrimSpace(string(data)), MaxText)
 		truncated = len(data) > MaxText
 	} else {
-		title, text, truncated, err = extract(lr)
+		title, text, truncated, links, headings, err = extractOutlinedPage(lr, res.Request.URL.String())
 		if err != nil {
 			return Document{}, err
 		}
@@ -172,11 +176,15 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 	if err := CheckContent(title, text); err != nil {
 		return Document{}, err
 	}
-	if utf8.RuneCountInString(text) < 40 {
-		return Document{}, ContentError("insufficient_text")
-	}
 	doc := MakeDocument(res.Request.URL.String(), title, text, "http")
 	doc.Truncated = truncated
+	doc.Links = links
+	doc.Headings = headings
+	if utf8.RuneCountInString(text) < 40 {
+		// A sparse project landing page may still link to its documentation.
+		// Return metadata with the error; callers must not accept this as evidence.
+		return doc, ContentError("insufficient_text")
+	}
 	return doc, nil
 }
 

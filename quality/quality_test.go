@@ -208,7 +208,7 @@ func TestModelDiagnosticsOnlyContainFixedErrorCategories(t *testing.T) {
 
 func TestRunReplayAndManualReview(t *testing.T) {
 	var searches, models atomic.Int32
-	var breakModel atomic.Bool
+	var breakModel, invalidCitation atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/search" {
 			searches.Add(1)
@@ -221,6 +221,9 @@ func TestRunReplayAndManualReview(t *testing.T) {
 			return
 		}
 		body := `{"answers_query":true,"title":"Atlas","lead":{"text":"Atlas provides repository abstractions for data access.","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}`
+		if invalidCitation.Load() {
+			body = strings.Replace(body, `"e1"`, `"TOPSECRET-TEST private draft citation"`, 1)
+		}
 		fmt.Fprintf(w, `{"choices":[{"message":{"content":%q},"finish_reason":"stop"}]}`, body)
 	}))
 	defer srv.Close()
@@ -268,7 +271,16 @@ func TestRunReplayAndManualReview(t *testing.T) {
 	x.Checks[0].Verdict, x.Claims[0].Verdict = "pass", "supported"
 	fsutil.WriteJSON(filepath.Join(opt.Out, "review.json"), review)
 	summary, err = SummarizeReview(opt.Out)
-	if err != nil || summary.Reviewed != 1 || summary.CoreAnswered != 1 || summary.SupportedStatements != 1 {
+	if err != nil || summary.Pending != 1 || summary.Reviewed != 0 {
+		t.Fatal("unreviewed title silently scored", summary, err)
+	}
+	if review.Version != 2 || len(x.UncitedText) != 1 || x.UncitedText[0].Location != "title" {
+		t.Fatal("title missing from review", review)
+	}
+	x.UncitedText[0].Verdict = "pass"
+	fsutil.WriteJSON(filepath.Join(opt.Out, "review.json"), review)
+	summary, err = SummarizeReview(opt.Out)
+	if err != nil || summary.Reviewed != 1 || summary.CoreAnswered != 1 || summary.SupportedStatements != 1 || summary.FullTextReviewed != 1 || summary.UncitedTextPassed != 1 || summary.LegacyBodyOnly != 0 {
 		t.Fatal("manual review not counted", summary, err)
 	}
 	x.Claims[0].EvidenceIDs = []string{"e999"}
@@ -280,6 +292,34 @@ func TestRunReplayAndManualReview(t *testing.T) {
 	r, err = Run(context.Background(), opt, getenv, io.Discard)
 	if err != nil || r.Completed != 1 || searches.Load() != 1 || models.Load() != 2 || r.Mode != "snapshot-model-live" {
 		t.Fatal("snapshot replay went live or failed", r, err)
+	}
+	fixedOpt := Options{Suite: suite, Cases: []Case{c}, Out: filepath.Join(root, "fixed"), FixedEvidence: opt.Replay, Render: opt.Render}
+	r, err = Run(context.Background(), fixedOpt, getenv, io.Discard)
+	if err != nil || r.Completed != 1 || searches.Load() != 1 || models.Load() != 3 || r.Mode != "evidence-model-live" || r.Cases[0].Stats.SearchCalls != 0 || r.Cases[0].Stats.PagesRead != 0 || r.Cases[0].Stats.ModelCalls != 1 {
+		t.Fatal("fixed evidence performed retrieval or lost writing calls", r, err)
+	}
+	var frozen research.SynthesisInput
+	if err := readJSON(filepath.Join(fixedOpt.Out, "atlas/synthesis_input.json"), 2<<20, &frozen); err != nil || hashJSON(frozen) != r.Cases[0].EvidenceInputHash || r.Cases[0].SourceAnswerHash == "" {
+		t.Fatal("fixed evidence input provenance missing", err)
+	}
+	var fixedOutput, original research.Output
+	readJSON(filepath.Join(fixedOpt.Out, "atlas/output.json"), 2<<20, &fixedOutput)
+	readJSON(filepath.Join(opt.Replay, "atlas/output.json"), 2<<20, &original)
+	if !reflect.DeepEqual(fixedOutput.Evidence, original.Evidence) || !reflect.DeepEqual(fixedOutput.Plan, original.Plan) || !fixedOutput.GeneratedAt.Equal(original.GeneratedAt) {
+		t.Fatal("fixed evidence changed passages, IDs, plan or reference date")
+	}
+	original.Evidence[0].Text += " altered after recording"
+	fsutil.WriteJSON(filepath.Join(opt.Replay, "atlas/output.json"), original)
+	fixedOpt.Out = filepath.Join(root, "changed-fixed-source")
+	if _, err := Run(context.Background(), fixedOpt, getenv, io.Discard); err == nil || models.Load() != 3 || searches.Load() != 1 {
+		t.Fatal("changed evidence source reached model")
+	}
+	if _, err := os.Stat(fixedOpt.Out); !os.IsNotExist(err) {
+		t.Fatal("changed source created a run directory")
+	}
+	fixedOpt.Replay = opt.Replay
+	if _, err := Run(context.Background(), fixedOpt, getenv, io.Discard); err == nil || models.Load() != 3 {
+		t.Fatal("ambiguous replay modes accepted")
 	}
 	var snap Snapshot
 	readJSON(filepath.Join(opt.Replay, "atlas/snapshot.json"), 20<<20, &snap)
@@ -304,6 +344,23 @@ func TestRunReplayAndManualReview(t *testing.T) {
 	}
 	if _, err := Run(context.Background(), opt, getenv, io.Discard); err == nil {
 		t.Fatal("existing run overwritten")
+	}
+	breakModel.Store(false)
+	invalidCitation.Store(true)
+	opt.Out = filepath.Join(root, "invalid-citation")
+	var progress strings.Builder
+	r, err = Run(context.Background(), opt, getenv, &progress)
+	if err == nil || r.Failures != 1 || r.Cases[0].Error != "answer_validation" || r.Cases[0].ValidationCode != "unknown_citation" {
+		t.Fatal("validation diagnostic lost", r, err)
+	}
+	for _, path := range []string{"report.json", "atlas/output.json", "atlas/review.md"} {
+		data, readErr := os.ReadFile(filepath.Join(opt.Out, path))
+		if readErr != nil || strings.Contains(string(data), "TOPSECRET-TEST") {
+			t.Fatal("validation diagnostic leaked failed draft", path, readErr)
+		}
+	}
+	if !strings.Contains(progress.String(), "validation=unknown_citation") || strings.Contains(progress.String(), "TOPSECRET-TEST") {
+		t.Fatal("unsafe diagnostic progress", progress.String())
 	}
 	// Fixture quality is not an empirical score for real model accuracy.
 	b, _ := json.Marshal(r)

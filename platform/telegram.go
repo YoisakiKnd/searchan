@@ -106,6 +106,7 @@ func (t *Telegram) DecodeWebhook(r *http.Request) (Event, error) {
 			MessageID int64 `json:"message_id"`
 			ThreadID  int64 `json:"message_thread_id"`
 			Text      string
+			Entities  []telegramEntity `json:"entities"`
 			From      struct {
 				ID    int64
 				IsBot bool `json:"is_bot"`
@@ -122,6 +123,11 @@ func (t *Telegram) DecodeWebhook(r *http.Request) (Event, error) {
 	m := update.Message
 	if m.From.ID == 0 || m.Chat.ID == 0 || m.MessageID <= 0 || update.UpdateID < 0 {
 		return Event{}, errors.New("Telegram event missing identity")
+	}
+	var accepted bool
+	m.Text, accepted = telegramInput(m.Text, t.Username, m.Entities)
+	if !accepted {
+		return Event{}, nil
 	}
 	if fields := strings.Fields(m.Text); len(fields) > 0 {
 		if _, mention, ok := strings.Cut(fields[0], "@"); ok && (t.Username == "" || !strings.EqualFold(mention, t.Username)) {

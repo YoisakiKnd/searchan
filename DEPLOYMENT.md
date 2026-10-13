@@ -1,6 +1,6 @@
 # Telegram 首发：Linux 原生部署
 
-2026-10-10。默认使用 systemd，单机单进程，无需 Docker、Redis 或数据库。当前尚未提供服务器、域名和真实凭据；本地验收完成不代表已经上线。
+2026-10-12。默认使用 systemd，单机单进程，无需 Docker、Redis 或数据库。已使用用户指定的私有本地配置测试搜索、模型及只读 Telegram 身份/回调状态；尚无目标主机访问和指定测试会话的发送验收。本地验收完成不代表已经上线。
 
 ## 准备发布包
 
@@ -100,6 +100,8 @@ sudo /opt/searchan/bin/searchan-admin doctor -strict -online
 
 核对 Bot username。注册只订阅 message，默认保留积压更新；只有明确需要丢弃时才加 -drop-pending。在线预检仅调用 getMe / getWebhookInfo，不发送消息，仍需在指定测试会话验证公网回调和图片交付。
 
+`telegram info` 显示 `can_read_all_group_messages`，`doctor -online` 的 `telegram-group-mentions` 检查说明 @提问的接收前提。为让已经入群的普通 Bot 接收 `@本Bot 问题`，可以在 BotFather 的 Group Privacy / `/setprivacy` 中关闭隐私模式，再将 Bot 重新加入目标群；已有管理员 Bot 也会接收群消息，不应仅因 getMe 隐私字段为 false 就判断管理员场景不可用。程序只处理命令和消息开头的明确提及，不将其余群聊内容用于搜索。这项检查不证明目标群权限、旧群设置或公网投递已生效。[官方隐私模式说明](https://core.telegram.org/bots/features#privacy-mode)。
+
 ```text
 /start
 /search Go context cancellation 如何使用，给出来源
@@ -107,7 +109,9 @@ sudo /opt/searchan/bin/searchan-admin doctor -strict -online
 /sources 返回的任务ID
 ```
 
-确认手机收到清晰 PNG 与可点击来源，引用对应原文；非白名单用户不能产生付费任务。群内 `/search@本Bot` 需正确 username；其他 Bot 命令忽略。自行启用代理访问日志时过滤 secret 请求头和正文。
+确认手机收到清晰 PNG 与可点击来源，引用对应原文；非白名单用户不能产生付费任务。群内优先使用 `/search@本Bot 问题`，需正确 username；其他 Bot 命令忽略。消息开头为 `@本Bot 问题` 时也能解析为搜索，只有 @ 时显示帮助，但 Telegram 隐私模式不保证这类普通文本会送达 Bot。无需为命令搜索关闭隐私模式；实际投递规则见 [Telegram 官方 FAQ](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get)。普通群消息、句中提及及其他 Bot 消息不会自动触发搜索。
+
+空命令、问题过长、队列/用户任务额度用尽和错误任务 ID 会给出简短反馈。 验收时补测：状态查询后立即取消应收到首次确认；受理提示 HTTP 尚未返回时取消应阻止后续搜索；重复取消和确认超时后的重投/重启不能重复发送或恢复工作。已失败或最终结果交付在途/不明的状态不能改写为已取消。容量拒绝持久去重，Webhook 重试不能在名额释放后把旧拒绝请求变成新搜索。所有搜索后端均失败时提示服务不可用；后端正常但没有可用证据才建议调整关键词。自行启用代理访问日志时过滤 secret 请求头和正文。
 
 ## 升级、回滚及备份
 
@@ -141,6 +145,8 @@ systemd 设置整体 MemoryMax=384M（含 Typst）、CPU 最多两核、TasksMax
 明确 429 拒绝最多重试两次、每次等待≤5 秒；超时、5xx、缺失回执等不明发送标记 uncertain，避免自动重复交付。重启恢复排队任务及已保存的研究结果；未保存结果的运行任务失败，发送中记录 uncertain。核对平台是否已收到，再决定重新提问。
 
 日志使用 journald，不打印密钥和问题全文，按主机策略设置日志容量。结束任务保留 7 天、网页缓存默认 30 分钟，uncertain 留待核对。TTL 不是磁盘容量上限，需要监控及清理策略。
+
+搜索失败的任务文件新增 `failure.search_calls` / `pages_read` / `model_calls` 和 `search_failures`，journal 的 `task failed` 同时记录安全类别计数，例如 `network_timeout`、`http_429`、`blocked`。这区分服务故障和正常无结果，不输出故障的原始远端文本；旧任务无字段时不能补猜原因。单任务同后端连续两次网络/5xx 故障后暂停并保留已有结果，其他已配置后端继续；所有后端不可用仍报错，不凭模型常识生成无证据答案。
 
 ## 发布检查与待验收
 
@@ -188,6 +194,8 @@ NapCat 配置两条 HTTP 连接：HTTP Server 监听 API 地址，token 对应 `
 网关与 Searchan 不在同一主机时，应使用受控内网或 HTTPS。`deploy/Caddyfile.native` 默认只开放 Telegram；需要公网 OneBot 回调时，在该 POST 路径匹配器中增加 `/webhooks/onebot`，保留验签，不对公网开放网关管理/API 端口。无效签名、错误机器人 ID、非白名单群不会启动搜索；机器人自身消息和发给其他机器人的 @ 消息被忽略。
 
 更新配置后执行 `sudo searchan-admin doctor -strict`，再重启 Searchan。用允许的 QQ 会话发送 `/search SpringData简介`，确认只收到一份合并聊天记录，内含全部 PNG、摘要、限制和来源链接；开始搜索的状态消息仍单独发送。用未允许的群重复测试不能启动任务，并检查重复上报不会重复创建任务。图片以流式 base64 传送，无需两端共享磁盘。
+
+也可在消息开头通过 QQ 的实际 @功能选中本机器人，再输入自然语言问题；只有 @机器人 时显示帮助。首部空白或 reply 元数据不影响识别，句中提及或图片/表情之后的提及不触发自然语言搜索。纯文本 `@QQ号`、字符串格式的 CQ 不作为真实 at 段执行。此入口沿用 `/search` 的签名、白名单及额度规则；`/search` 和控制命令仍可直接使用。
 
 `doctor` 目前只验证 OneBot 本地配置与中文渲染，不登录或实际调用网关。实际 QQ 权限、网关版本、转发成功、手机显示与网络占用仍需按账号验收。`async`、网络错误、缺失最终 message ID 或通用发送错误会进入 `uncertain`，先核对 QQ 是否收到，再人工决定是否重新提问。切换 QQ_BACKEND 前应处理完已有 QQ 任务；官方 openid 与 OneBot 数字 QQ 号不能互换。
 

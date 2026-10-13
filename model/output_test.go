@@ -41,4 +41,8 @@ func TestOutputErrorsDescribeSchemaWithoutRetainingContent(t *testing.T) {
 	if err := decodeOutput(" \n {\"value\":\"好\"} \n ", &out); err != nil || out.Value != "好" {
 		t.Fatal("valid output rejected", err)
 	}
+	var detail *OutputError
+	if err := decodeOutput(`{"value":`, &out); !errors.As(err, &detail) || detail.Diagnostic().Cause != "unexpected_end" {
+		t.Fatal("missing safe incomplete JSON cause", err)
+	}
 }

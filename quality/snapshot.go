@@ -122,6 +122,10 @@ func (t *Tape) load(kind, key string, value any) error {
 				return context.DeadlineExceeded
 			case "cancelled":
 				return context.Canceled
+			case "network_timeout":
+				return &net.DNSError{Err: "recorded network timeout", IsTimeout: true}
+			case "network_error":
+				return &net.OpError{Op: "request", Net: "tcp", Err: errors.New("recorded network failure")}
 			case "blocked":
 				return search.ErrBlocked
 			default:
@@ -165,14 +169,22 @@ func ErrorCode(err error) string {
 		return "blocked"
 	case errors.Is(err, research.ErrModelRequired):
 		return "model_required"
+	case errors.Is(err, research.ErrInvalidEvidenceInput):
+		return "invalid_evidence"
 	case errors.Is(err, research.ErrNoEvidence):
 		return "no_evidence"
+	case errors.Is(err, research.ErrSearchUnavailable):
+		return "search_unavailable"
 	case errors.Is(err, research.ErrAnswerGeneration):
 		return "generation"
 	case errors.Is(err, research.ErrAnswerValidation):
 		return "answer_validation"
 	default:
-		return "io_error"
+		var output *model.OutputError
+		if errors.As(err, &output) {
+			return modelFailureCode(err)
+		}
+		return search.FailureCode(err)
 	}
 }
 
@@ -233,6 +245,18 @@ func (m *tapedModel) Complete(ctx context.Context, prompt string, input, output 
 func modelFailureCode(err error) string {
 	var output *model.OutputError
 	if errors.As(err, &output) {
+		switch output.Kind() {
+		case "incomplete":
+			return "output_incomplete"
+		case "empty":
+			return "answer_missing"
+		case "refusal":
+			return "output_refused"
+		case "protocol":
+			return "output_protocol"
+		case "api":
+			return "api_error"
+		}
 		code := "invalid_json_" + output.Kind()
 		if output.Field() != "" {
 			code += "_" + strings.ReplaceAll(output.Field(), ".", "_")

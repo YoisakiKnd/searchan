@@ -4,7 +4,7 @@
 #set par(leading: 0.65em, justify: false)
 #set heading(numbering: none)
 #show heading.where(level: 2): it => block(above: 1.1em, below: 0.55em)[#text(size: 13pt, weight: "bold", fill: rgb("#245f78"), it.body)]
-#let citation(c) = if c.citation != "" { text(size: 9pt, fill: rgb("#377c96"), " " + c.citation) }
+#let citation(c) = if c.citation != "" { [ #box(text(size: 9pt, fill: rgb("#377c96"), c.citation))] }
 #let claim(c) = [#text(c.text)#citation(c)]
 
 #let report = [
@@ -26,7 +26,7 @@
   let cells = data.table.columns.map(c => text(weight: "bold", c))
   for row in data.table.rows {
     for (i, cell) in row.cells.enumerate() {
-      cells.push([#text(cell)#if i == row.cells.len() - 1 { text(size: 8pt, fill: rgb("#377c96"), " " + row.citation) }])
+      cells.push([#text(cell)#if i == row.cells.len() - 1 { citation(row) }])
     }
   }
   table(columns: data.table.columns.len(), inset: 7pt, stroke: 0.4pt + rgb("#d6e0e9"), fill: (x, y) => if y == 0 { rgb("#e8f0f6") } else { white }, ..cells)

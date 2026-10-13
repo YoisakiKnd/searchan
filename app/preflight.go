@@ -134,6 +134,13 @@ func (r *Runtime) Preflight(ctx context.Context, strict, online bool) Preflight 
 			add("telegram-online", "fail", "configured bot username does not match token")
 		} else {
 			add("telegram-online", "pass", "bot identity verified")
+			if bot.CanReadAllGroupMessages {
+				add("telegram-group-mentions", "pass", "privacy mode disabled; existing groups may need the bot re-added; actual group delivery not verified")
+			} else {
+				// getMe reports a bot-wide privacy setting, not this bot's
+				// administrator role or delivery permissions in a particular group.
+				add("telegram-group-mentions", "warn", "group delivery of @username questions not verified: privacy mode is enabled or unreported; use /search@username, or configure BotFather privacy and re-add the bot; group administrators receive all messages")
+			}
 		}
 		info, err := r.Telegram.WebhookInfo(checkCtx)
 		if err != nil {

@@ -23,6 +23,7 @@ import (
 var validID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var ErrBusy = errors.New("task queue is full")
 var ErrQuota = errors.New("active task quota exceeded")
+var ErrNotCancellable = errors.New("task can no longer be cancelled")
 
 type Delivery struct {
 	Kind    string `json:"kind"`
@@ -31,17 +32,28 @@ type Delivery struct {
 	Receipt string `json:"receipt,omitempty"`
 }
 type Record struct {
-	ID         string            `json:"id"`
-	Query      string            `json:"query"`
-	Deep       bool              `json:"deep,omitempty"`
-	Target     platform.Target   `json:"target"`
-	State      string            `json:"state"`
-	Created    time.Time         `json:"created"`
-	Updated    time.Time         `json:"updated"`
-	Output     *research.Output  `json:"output,omitempty"`
-	Artifacts  []render.Artifact `json:"artifacts,omitempty"`
-	Deliveries []Delivery        `json:"deliveries,omitempty"`
-	Error      string            `json:"error,omitempty"`
+	ID         string             `json:"id"`
+	Query      string             `json:"query"`
+	Deep       bool               `json:"deep,omitempty"`
+	Target     platform.Target    `json:"target"`
+	State      string             `json:"state"`
+	Created    time.Time          `json:"created"`
+	Updated    time.Time          `json:"updated"`
+	Output     *research.Output   `json:"output,omitempty"`
+	Artifacts  []render.Artifact  `json:"artifacts,omitempty"`
+	Deliveries []Delivery         `json:"deliveries,omitempty"`
+	Error      string             `json:"error,omitempty"`
+	Failure    *FailureDiagnostic `json:"failure,omitempty"`
+}
+
+// FailureDiagnostic retains only counts and fixed search failure categories.
+// A partial research result must never occupy Output, which signals resumable
+// completed research to workers after a restart.
+type FailureDiagnostic struct {
+	SearchCalls    int            `json:"search_calls"`
+	PagesRead      int            `json:"pages_read"`
+	ModelCalls     int            `json:"model_calls"`
+	SearchFailures map[string]int `json:"search_failures,omitempty"`
 }
 
 type Store struct {
@@ -274,30 +286,70 @@ func (s *Store) Claim() (Record, bool, error) {
 	return Record{}, false, nil
 }
 func (s *Store) Cancel(id string, target platform.Target) error {
+	_, err := s.CancelOnce(id, target)
+	return err
+}
+
+// CancelOnce reports whether this call changed active work into a cancelled
+// task. Repeated cancellation is a read-only success, without refreshing the
+// retention timestamp or granting another priority confirmation.
+func (s *Store) CancelOnce(id string, target platform.Target) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, err := s.get(id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !SameTarget(r.Target, target) || r.Target.UserID != target.UserID {
-		return errors.New("task is not owned by this user")
+		return false, errors.New("task is not owned by this user")
 	}
-	if r.State == "sending" || r.State == "completed" || r.State == "uncertain" {
-		return errors.New("task can no longer be cancelled")
+	switch r.State {
+	case "cancelled":
+		// A rename may have succeeded before a prior fsync/bookkeeping error.
+		// Reconcile memory without rewriting the durable cancellation.
+		s.releaseActive(id)
+		return false, nil
+	case "queued", "running", "ready":
+	case "sending":
+		// Cancelling a progress acknowledgement stops subsequent paid work.
+		// A final report/image/text or failure reply already in flight retains
+		// the conservative unknown-delivery rules instead.
+		if len(r.Deliveries) == 0 {
+			return false, ErrNotCancellable
+		}
+		last := r.Deliveries[len(r.Deliveries)-1]
+		if last.Kind != "accepted" || last.State != "sending" {
+			return false, ErrNotCancellable
+		}
+	default:
+		return false, ErrNotCancellable
+	}
+	if r.Failure != nil || r.Output == nil && r.Error != "" {
+		return false, ErrNotCancellable
+	}
+	for _, d := range r.Deliveries {
+		if d.State == "uncertain" || d.State == "sending" && d.Kind != "accepted" {
+			return false, ErrNotCancellable
+		}
 	}
 	r.State = "cancelled"
 	if err := s.save(r); err != nil {
-		return err
+		return false, err
 	}
+	s.releaseActive(id)
+	return true, nil
+}
+
+func (s *Store) releaseActive(id string) {
 	delete(s.live, id)
 	for i, queued := range s.pending {
 		if queued == id {
-			s.pending = append(s.pending[:i], s.pending[i+1:]...)
+			copy(s.pending[i:], s.pending[i+1:])
+			s.pending[len(s.pending)-1] = ""
+			s.pending = s.pending[:len(s.pending)-1]
 			break
 		}
 	}
-	return nil
 }
 
 func (s *Store) pop() {
@@ -314,6 +366,18 @@ func eventID(event platform.Event) string {
 // BeginReply persists send intent for short command replies before contacting
 // the platform. Repeated webhooks cannot repeat a reply with unknown outcome.
 func (s *Store) BeginReply(event platform.Event) (Record, bool, error) {
+	return s.recordReply(event, false)
+}
+
+// IgnoreEvent durably consumes a throttled control event without sending a
+// reply. A later webhook retry must not become a fresh paid search. Existing
+// search/reply records are returned untouched by the shared identity check.
+func (s *Store) IgnoreEvent(event platform.Event) error {
+	_, _, err := s.recordReply(event, true)
+	return err
+}
+
+func (s *Store) recordReply(event platform.Event, quiet bool) (Record, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	id := eventID(event)
@@ -323,6 +387,9 @@ func (s *Store) BeginReply(event platform.Event) (Record, bool, error) {
 		return Record{}, false, err
 	}
 	r := Record{ID: id, Target: event.Target, State: "sending", Created: time.Now().UTC(), Deliveries: []Delivery{{Kind: "control", State: "sending"}}}
+	if quiet {
+		r.State, r.Error, r.Deliveries = "completed", "event ignored by rate limit", nil
+	}
 	return r, true, s.save(r)
 }
 

@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
@@ -14,10 +16,12 @@ import (
 // textSink collapses HTML whitespace without inventing spaces at inline tag
 // boundaries. Builders and pending separators stay bounded independently.
 type textSink struct {
-	b         strings.Builder
-	limit     int
-	pending   string
-	truncated bool
+	b                       strings.Builder
+	limit                   int
+	pending                 string
+	truncated               bool
+	headings                []Heading
+	headingID, headingIndex int
 }
 
 func (s *textSink) append(raw []byte) {
@@ -70,6 +74,44 @@ func (s *textSink) text(raw []byte, pre bool) {
 		}
 	}
 }
+
+// Capture offsets in the same bounded builder that emits the final text, so
+// discarded navigation or promotion to articleBody cannot misalign sections.
+func (s *textSink) content(raw []byte, pre bool, id, level int) {
+	if id == 0 {
+		s.text(raw, pre)
+		return
+	}
+	if id != s.headingID {
+		s.headingID, s.headingIndex = id, -1
+		s.flush()
+		if s.b.Len() < s.limit && len(s.headings) < 128 {
+			s.headingIndex = len(s.headings)
+			s.headings = append(s.headings, Heading{Start: s.b.Len(), End: s.b.Len(), Level: level})
+		}
+	}
+	s.text(raw, pre)
+	if s.headingIndex >= 0 {
+		s.headings[s.headingIndex].End = s.b.Len()
+	}
+}
+
+func (s *textSink) result() (string, []Heading) {
+	raw := s.b.String()
+	left := strings.TrimLeftFunc(raw, unicode.IsSpace)
+	offset := len(raw) - len(left)
+	text := strings.TrimRightFunc(left, unicode.IsSpace)
+	out := s.headings[:0]
+	for _, h := range s.headings {
+		h.Start -= offset
+		h.End = min(h.End-offset, len(text))
+		if h.Start >= 0 && h.End > h.Start && h.Start < len(text) {
+			out = append(out, h)
+		}
+	}
+	return text, out
+}
+
 func htmlSpace(b byte) bool { return b <= ' ' && (b == ' ' || b >= '\t' && b <= '\r' && b != '\v') }
 
 // Extract streams tokens without a DOM. Inline identifiers, preformatted code
@@ -80,18 +122,39 @@ func Extract(r io.Reader) (string, string, error) {
 }
 
 func extract(r io.Reader) (string, string, bool, error) {
+	title, text, truncated, _, err := extractPage(r, "")
+	return title, text, truncated, err
+}
+
+func extractPage(r io.Reader, pageURL string) (string, string, bool, []Link, error) {
+	title, text, truncated, links, _, err := extractOutlinedPage(r, pageURL)
+	return title, text, truncated, links, err
+}
+
+func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []Link, []Heading, error) {
+	base, _ := url.Parse(pageURL)
+	var links []Link
+	seenLinks := map[string]bool{}
 	z := html.NewTokenizer(r)
 	z.SetMaxBuf(256 << 10)
 	all, main, title := textSink{limit: MaxText}, textSink{limit: MaxText}, textSink{limit: 512}
 	type frame struct {
 		tag                                   string
 		skip, main, body, article, title, pre bool
+		link, heading                         int
 	}
 	stack := make([]frame, 0, 32)
 	skip, primary, inBody, inArticle, inTitle, pre := 0, 0, 0, 0, 0, 0
 	selected := 0
+	activeLink := 0
+	activeHeading, headingSequence := 0, 0
+	titleSeen := false
 	pop := func(i int) {
+		linkClosed := false
+		headingClosed := false
 		for _, f := range stack[i:] {
+			linkClosed = linkClosed || f.link > 0
+			headingClosed = headingClosed || f.heading > 0
 			if f.skip {
 				skip--
 			}
@@ -112,6 +175,24 @@ func extract(r io.Reader) (string, string, bool, error) {
 			}
 		}
 		stack = stack[:i]
+		if headingClosed {
+			activeHeading = 0
+			for j := len(stack) - 1; j >= 0; j-- {
+				if stack[j].heading > 0 {
+					activeHeading = j + 1
+					break
+				}
+			}
+		}
+		if linkClosed {
+			activeLink = 0
+			for j := len(stack) - 1; j >= 0; j-- {
+				if stack[j].link > 0 {
+					activeLink = stack[j].link
+					break
+				}
+			}
+		}
 	}
 	separate := func(sep string) {
 		if skip == 0 {
@@ -126,26 +207,46 @@ func extract(r io.Reader) (string, string, bool, error) {
 		switch tt {
 		case html.ErrorToken:
 			if z.Err() != io.EOF {
-				return "", "", false, fmt.Errorf("HTML tokenization: %w", z.Err())
+				return "", "", false, nil, nil, fmt.Errorf("HTML tokenization: %w", z.Err())
 			}
-			text := strings.TrimSpace(all.b.String())
+			text, headings := all.result()
 			truncated := all.truncated
 			if strings.TrimSpace(main.b.String()) != "" {
-				text = strings.TrimSpace(main.b.String())
+				text, headings = main.result()
 				truncated = main.truncated
 			}
-			return strings.TrimSpace(title.b.String()), text, truncated, nil
+			return strings.TrimSpace(title.b.String()), text, truncated, links, headings, nil
 		case html.StartTagToken, html.SelfClosingTagToken:
 			name, more := z.TagName()
 			tag := atom.Lookup(name).String()
 			if tag == "" {
 				tag = string(name)
 			}
-			f := frame{tag: tag, skip: skipTag(tag) || tag == "header" && primary == 0, main: tag == "main" || tag == "article", article: tag == "article", title: tag == "title", pre: tag == "pre"}
+			documentTitle := tag == "title" && !titleSeen
+			if documentTitle {
+				// The tokenizer also emits SVG/widget <title> tags. Only the
+				// first document-level title is metadata; skipped subtrees must
+				// not escape their exclusion through the title text exception.
+				for _, parent := range stack {
+					if parent.tag != "html" && parent.tag != "head" {
+						documentTitle = false
+						break
+					}
+				}
+			}
+			f := frame{tag: tag, skip: skipTag(tag) || tag == "title" || tag == "header" && primary == 0, main: tag == "main" || tag == "article", article: tag == "article", title: documentTitle, pre: tag == "pre"}
+			if documentTitle {
+				titleSeen = true
+			}
+			href := ""
 			for more {
 				key, val, next := z.TagAttr()
 				more = next
 				switch string(key) {
+				case "href":
+					if tag == "a" && pageURL != "" && len(val) <= 2048 {
+						href = string(val)
+					}
 				case "id", "class", "itemprop":
 					body, excluded := contentAttributes(tag, string(key), string(val))
 					f.body = f.body || body
@@ -163,6 +264,19 @@ func extract(r io.Reader) (string, string, bool, error) {
 						f.main = true
 					case "navigation", "complementary":
 						f.skip = true
+					}
+				}
+			}
+			if base != nil && base.Host != "" && skip == 0 && !f.skip && href != "" && !strings.HasPrefix(href, "#") && len(links) < 32 {
+				if target, err := base.Parse(href); err == nil {
+					target.Fragment = ""
+					raw := target.String()
+					// External links only: navigation on the same site otherwise
+					// consumes the small discovery budget before original sources.
+					if len(raw) <= 2048 && target.Hostname() != base.Hostname() && !seenLinks[raw] && ValidateURL(raw) == nil {
+						seenLinks[raw] = true
+						links = append(links, Link{URL: raw})
+						f.link = len(links)
 					}
 				}
 			}
@@ -188,9 +302,19 @@ func extract(r io.Reader) (string, string, bool, error) {
 			}
 			if tt != html.SelfClosingTagToken && !voidTag(tag) {
 				if len(stack) >= 512 {
-					return "", "", false, errors.New("HTML nesting limit exceeded")
+					return "", "", false, nil, nil, errors.New("HTML nesting limit exceeded")
+				}
+				if len(tag) == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6' {
+					headingSequence++
+					f.heading = headingSequence
 				}
 				stack = append(stack, f)
+				if f.heading > 0 {
+					activeHeading = len(stack)
+				}
+				if f.link > 0 {
+					activeLink = f.link
+				}
 				if f.skip {
 					skip++
 				}
@@ -239,6 +363,12 @@ func extract(r io.Reader) (string, string, bool, error) {
 				title.text(raw, false)
 			}
 			if skip == 0 && inTitle == 0 {
+				if activeLink > 0 {
+					link := &links[activeLink-1]
+					if len(link.Text) < 160 {
+						link.Text = Clip(strings.TrimSpace(link.Text+" "+strings.TrimSpace(Clip(string(raw), 160))), 160)
+					}
+				}
 				if primary > 0 {
 					level := 1 // main/role=main
 					if inArticle > 0 {
@@ -254,12 +384,24 @@ func extract(r io.Reader) (string, string, bool, error) {
 						selected = level
 					}
 					if level >= selected {
-						main.text(raw, pre > 0)
+						id, level := 0, 0
+						if activeHeading > 0 {
+							f := stack[activeHeading-1]
+							id = f.heading
+							level = int(f.tag[1] - '0')
+						}
+						main.content(raw, pre > 0, id, level)
 					}
 				} else if main.b.Len() == 0 {
 					// Once explicit primary text exists, the fallback builder can
 					// never be selected. Avoid scanning and storing that text twice.
-					all.text(raw, pre > 0)
+					id, level := 0, 0
+					if activeHeading > 0 {
+						f := stack[activeHeading-1]
+						id = f.heading
+						level = int(f.tag[1] - '0')
+					}
+					all.content(raw, pre > 0, id, level)
 				}
 			}
 		}

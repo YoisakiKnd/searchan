@@ -2,13 +2,13 @@
 
 本地真实搜索、AI 总结及 Typst 效果测试见 [QUALITY_EVALUATION.md](QUALITY_EVALUATION.md)：固定 30 条复核题，默认先跑 3 条，保存搜索/正文快照和最终图片，并逐条检查事实与引用支持。
 
-当前效果调整和实测结果见 [QUALITY_ITERATION_03.md](QUALITY_ITERATION_03.md)：简介已缩短、已知推荐预览混入问题得到修正，旧来源事实和生成失败仍待解决。
+最新记录见 [QUALITY_ITERATION_28.md](QUALITY_ITERATION_28.md)：当前模型两条固定证据回归完成单图，PostgreSQL默认值有支持但范围仍缺，JWT仍有范围错误。Telegram支持带实际mention实体的紧贴中文提问，代码/引用示例不建任务；回归、实际Typst到模拟Telegram及完整工程检查通过。第四至二十八轮整理为开发候选并走Linux CI，正式版本仍为RC.6；完整质量门槛未完成。
 
 Go 搜索 Bot：多后端检索 → 读取网页 → 筛选证据 → 带引用总结与核验 → Typst 渲染 PNG → Telegram / QQ 回复。不读取群聊历史。
 
 已实现六个独立搜索适配器、直接 HTTP / Jina Reader、OpenAI Chat Completions / Responses 与 Anthropic Messages 模型客户端、证据与引用校验、固定 Typst 模板、平台 Webhook / 发送适配、有界持久任务队列和发送记录。真实供应商、模型效果及 Bot 账号权限仍需在部署环境联调；模拟测试不代表搜索质量评测。
 
-Telegram 首发使用 Linux + systemd，提供原生安装、升级/回滚脚本和 amd64/arm64 打包工具，无需 Docker。部署、预检、备份和验收步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。尚未配置真实服务器与凭据，本地通过不等于已经上线。
+Telegram 首发使用 Linux + systemd，提供原生安装、升级/回滚脚本和 amd64/arm64 打包工具，无需 Docker。部署、预检、备份和验收步骤见 [DEPLOYMENT.md](DEPLOYMENT.md)。本机已有用户指定的私有配置用于实测，目标服务器及真实会话交付仍待验收，本地通过不等于已经上线。
 
 本轮检查记录与尚待真实环境验证的项目见 [RELEASE_READINESS.md](RELEASE_READINESS.md)。
 
@@ -45,7 +45,7 @@ set +a
 ./bin/searchan version
 ```
 
-`ask` 生成 `output.json` 和 `page-1.png` 等图片。JSON 保存搜索计划、段落证据、文档哈希、引用绑定、来源、警告和阶段耗时。离线示例见 [示例图片](artifacts/demo/page-1.png)。
+`ask` 生成 `output.json` 和 `page-1.png` 等图片。JSON 保存搜索计划、段落证据、文档哈希、引用绑定、来源、警告和阶段耗时。运行上述 `demo` 后可查看本地生成的 [示例图片](artifacts/demo/page-1.png)。
 
 模型配置使用完整 `MODEL_ENDPOINT`、`MODEL_NAME` 和 `MODEL_API_KEY`。支持以下三种非流式文本协议，也可使用兼容它们的自建服务或网关；URL 原样使用，保留路径前缀和查询参数，不自动补路径。未配置模型时，ask / Bot 搜索直接报错，doctor 也不通过；独立原始搜索命令仍可使用。
 
@@ -59,7 +59,7 @@ set +a
 
 `MODEL_JSON_MODE=true` 在 Chat 使用 `response_format`，在 Responses 使用 `text.format`；不支持 JSON 模式的网关可关闭该选项。Anthropic 不发送这些 OpenAI 字段，依靠统一的 JSON 提示词与本地格式、引用校验。三种协议均拒绝空回答、截断、拒答及工具调用；Responses 从所有消息文本块提取正文，Anthropic 跳过思考块，不把思考过程当答案。
 
-思考控制默认 `MODEL_THINKING=auto`：未知服务不发送厂商专用思考字段，官方 `api.deepseek.com` 的 Chat 请求则显式关闭思考，节省本项目有限的时间与输出额度。可显式设置 `enabled` / `disabled`；`adaptive` 仅供支持该模式的 Anthropic 模型。官方 OpenAI Chat 使用 `MODEL_REASONING_EFFORT` 控制推理；Responses 使用其原生 `reasoning.effort`；Anthropic 使用 `thinking` 和可选 `output_config.effort`。`MODEL_THINKING_BUDGET` 仅用于 Anthropic 的 enabled 模式，默认 1024，须小于 `MODEL_MAX_TOKENS`。参数是否可用、effort 的取值范围取决于具体模型；不支持时应去掉配置，不会自动改协议或降级掩盖错误。
+思考控制默认 `MODEL_THINKING=auto`：未知服务不发送厂商专用思考字段，官方 `api.deepseek.com` 的 Chat 请求在未设置 effort 时显式关闭思考，节省本项目有限的时间与输出额度。在该端点显式设置非 `none` 的 `MODEL_REASONING_EFFORT` 会启用思考；`none` 转换成关闭思考，不作为不支持的 effort 值发送。显式关闭思考与非零 effort 冲突时在发请求前报错。可显式设置 `enabled` / `disabled`；`adaptive` 仅供支持该模式的 Anthropic 模型。官方 OpenAI Chat 使用 `MODEL_REASONING_EFFORT` 控制推理；Responses 使用其原生 `reasoning.effort`；Anthropic 使用 `thinking` 和可选 `output_config.effort`。`MODEL_THINKING_BUDGET` 仅用于 Anthropic 的 enabled 模式，默认 1024，须小于 `MODEL_MAX_TOKENS`。参数是否可用、effort 的取值范围取决于具体模型；不支持时应去掉配置，不会自动改协议或降级掩盖错误。
 
 `MODEL_RETRIES=1` 默认只对连接重置、响应传输中断及无 Retry-After 的 502 / 503 / 504 重试一次，等待 200 ms，且要求当前阶段至少剩余 2 秒。重试共享原 deadline；认证错误、429、非法 JSON、输出截断不会重试。重试可能产生第二次计费请求，设为 0 可禁用。模型使用独立连接池，取消搜索客户端的 15 秒响应头限制，以阶段超时和 HTTP 总超时控制完整请求；搜索、阅读和平台发送的超时保持独立。
 
@@ -77,6 +77,8 @@ sudo /opt/searchan/bin/searchan-admin model check -timeout 30s
 
 首批最多读取三页，获得证据后进行必要的覆盖评估；没有可用证据时分批继续读取预留范围内的候选。一篇合适的资料足够时，不再仅因正文少于两篇补搜。启用模型规划后，单个 aspect 也评估一次；关闭规划、只有一个 aspect 的非比较/核实/时效请求保留低开销路径。比较问题另检查可识别的双方实体，防止只找到一方就停止。
 
+覆盖检查复用原有一次模型调用，最多呈现 20 条尚未读取的线索，保留各查询前列结果及少量已读页面中的参考链接。模型可选择至多两个已有候选 ID 补读；程序不接受生成的 URL，继续共用页数、并发、SSRF 检查和截止时间。线索只构建一次，不递归爬取，标题自称“官方”不能证明身份；补读失败时仍可按原规则补搜核心缺口。读到新正文也不代表答案已经核实。
+
 供应商正文、直接读取、缓存和备用 Reader 共同检查明确的验证页、错误页及登录拦截内容；HTTP 200 不代表正文有效。旧缓存中的明确拦截页会重新读取，新拦截页不会写入缓存。启用 Jina Reader 后，正文无效也可触发备用读取，两种读取仍共享单页 deadline。规则不判断事实真假，也不能识别所有模板或伪造页面。
 
 1. 保留原始查询；自动生成 CamelCase / 空格拼写变体，例如 `SpringData简介` → `Spring Data 简介`。模型扩展与拼写变体共计最多三个查询、四个必须回答的方面。扩展不能丢弃原问题中的明确复合实体。轮流分配查询与启用后端，避免首个查询吃完预算。
@@ -91,6 +93,12 @@ sudo /opt/searchan/bin/searchan-admin model check -timeout 30s
 
 RRF 和多次命中不代表事实正确或来源独立。模型核验是辅助机制，不能代替人工评测。发布日期保留供应商原值，抓取时间单独记录。
 
+同一任务内，某后端连续两次网络故障、请求超时或 HTTP 5xx 后暂停，剩余额度交给其他已配置后端；成功响应（包括正常无结果）重置计数。暂停跨补搜轮次保留，下一个任务重新尝试。挑战、认证错误和限流沿用立即暂停；请求参数类错误不因此禁用后端。此策略减少持续故障时的重复等待，不增加重试或总请求上限，也不能让不可达服务恢复。
+
+简单事实题优先一至两句核心结论及必要条件，目标不超过 120 字符，没有最低字数；简单简介目标不超过 220 字符、最多两条补充要点。它们是写作提示，不是新的线上字数报错或截断规则。明确要求解释、详细、代码、多个问题或指定长度时保留一般写作范围。核验同时检查标题与正文；窄事实题核验失败后，短总结从原问题和证据重写，不携带可能新增断言的具体核验意见。现有真实测试说明模型仍会违反范围或泛化二手资料，不能把这些规则当作正确性保证。
+
+单后端且非比较请求在模型规划前执行原始查询，并复用其结果和预算。后端因认证、限流或挑战在本任务中暂停且无候选时，跳过无效规划；成功空结果或单次临时故障仍允许规划扩展。比较和多后端维持先规划的调度；不额外发健康探测请求。
+
 “最新 / 今天 / latest”等时效问题优先重新读取网页，不直接沿用供应商正文摘录；内置缓存最多沿用 30 秒。时效要求独立记录为 `plan.requires_fresh`，不会因“核实 / 比较”等意图或模型重新分类而失效；英文按词边界识别，避免把 concurrent 误判成 current。抓取时间不代表原文更新时间。规划失败时保留原始查询并用简单规则识别意图，不擅自添加未经核实的日期或版本。
 
 独立阶段超时：搜索请求 8s、页面读取及备用 Reader 总计 10s、规划 4s、生成 / 短总结各最多 18s。整体研究截止时间始终优先；检索阶段为回答保留最多 15s，生成给核验留时间，核验也为短总结留时间。慢后端超时后仍利用已收到的正文，尽量返回有依据的结果。参数见 `.env.example`。
@@ -98,6 +106,8 @@ RRF 和多次命中不代表事实正确或来源独立。模型核验是辅助�
 `output.json` 中 `answer_mode` 区分 `summary` / `brief_summary`，`answer_reason` 记录短总结原因（`snippets_only`、`verification_failed`、`verification_unavailable`、`question_unanswered`），`stats.answer_repairs` 记录布局修正次数（至多一次，零次时省略）。`stats.calls` 记录逐次后端、查询、候选数、新文档数、耗时与错误，另含直接 / 备用读取调用数、独立正文数、补搜查询及前 20 个排序候选。证据带连续段落范围、排序分数和方面词项命中；这些字段不代表事实可信度。布局错误日志包含实际字符数、章节数及是否有表格，不记录模型原始回答。
 
 逐页诊断位于 `output.json` 的 `stats.page_reads`：URL、最终读取方式、accepted / duplicate / rejected / failed 状态、固定问题代码、供应商正文拒绝原因、备用读取原因、截断标记和耗时。另有 `reading_batches`、`coverage_checks`、`recovery_trigger`（`evidence_gap` / `answer_gap`）。记录随页数有界，不重复保存整页正文；证据的 `read_method` 和 `truncated` 传入模型，获取方式不表示可信度。所有模型阶段共享最多 6 次逻辑调用，传输重试仍受原 deadline 控制。
+
+`stats.coverage_candidates` 最多记录 20 条实际提供给覆盖模型的候选 ID、URL、来源类型和 `selected`；后者表示已有 ID 通过选择及页数检查，实际是否开始读取与结果以 `page_reads` 为准。`candidate_reads` 是这条路径实际消耗的页数，失败页也计入，零次省略。诊断不保存模型理由、草稿或重复正文。
 
 ## 独立搜索后端
 
@@ -128,11 +138,21 @@ Go 库入口：`search.NewProvider(name, config)`、`NewDDG`、`NewBrave` 等；
 - 默认需为每个启用平台配置 `SEARCHAN_ALLOWED_USERS` 或 `SEARCHAN_ALLOWED_CHATS`（`telegram:ID` / `qq:ID`，允许用户或会话按“或”判断）；公开使用须显式 `SEARCHAN_PUBLIC=true`。
 - `GET /healthz` 检查进程；`GET /readyz` 检查持久化写入和停机状态，返回排队/运行数量。探测最多缓存 5 秒，不表示外部服务可用。
 
+Telegram 群聊可以发送 `/search 问题`、`/search@机器人名 问题`，或在消息开头发送 `@机器人名 自然语言问题`。后者需正确配置 `TELEGRAM_BOT_USERNAME`，且 Telegram 必须向 Bot 投递该消息：普通非管理员 Bot 的隐私模式可能阻止普通 @文本。`telegram info` 显示全局隐私能力，`doctor -online` 提示限制；关闭 BotFather 隐私模式后已有群需重新加入，管理员场景则不同。检查通过也不能代替目标群实测，详见 [部署说明](DEPLOYMENT.md)。消息中间的普通提及不触发搜索，权限与额度规则相同。[官方投递规则](https://core.telegram.org/bots/features#privacy-mode)。
+
+QQ OneBot/NapCat 也支持消息开头真实 `@本机器人 自然语言问题`，仅 @机器人 显示帮助。网关须上报 array 消息；字面 `@QQ号` 或原始 CQ 字符串不代替真实 at 段，句中提及不触发自然语言搜索。白名单和额度规则与 `/search` 相同。
+
 命令：`/start`、`/help`、`/search 问题`、`/ask 问题`、`/deep 问题`、`/status 任务ID`、`/sources 任务ID`、`/cancel 任务ID`。`/deep` 将搜索 / 阅读预算各翻倍（各最多 24），共用全局并发和任务截止时间，可能增加费用。只能在原会话 / 话题查询任务；取消还须同一用户。
+
+Telegram 群内推荐 `/search@本Bot 问题`。已送达的消息若以 `@本Bot` 开头，也支持直接写问题；隐私模式下这种普通文本不保证送达，详见 [Telegram FAQ](https://core.telegram.org/bots/faq#what-messages-will-my-bot-get)。普通聊天和句中提及不会自动搜索。空命令、无效任务 ID、队列满等会给出帮助或状态反馈，重复更新仍持久去重。
 
 任务先落盘再入队；重复搜索事件不重复建任务，短控制回复也在发送前持久化去重。发送前记录意图、成功后记录回执。渲染失败、整份合并交付或首张图片被明确拒绝时降级文字；明确 429 拒绝最多重试两次、单次等待不超过 5 秒；网络超时、5xx、缺失回执等结果不明时进入 `uncertain`，不自动重发。已经发送部分图片后失败也不会重发整份答案。相册所有 message ID 一起记录在 `report` 回执；升级时沿用已有逐页发送记录。OneBot `async`、缺失回执、通用发送异常（如 NapCat 1200）保守记为不明结果，不能自动转文字重复发送。
 
+取消可停止排队、研究、渲染准备以及仅受理提示在途的任务；已失败、最终结果发送、发送结果不明或已完成任务不能改成已取消。首次成功取消会优先确认，重复取消仍限速去重，不刷新保留时间；已交给平台的内容不能撤回。
+
 重启恢复队列与就绪任务；已保存的研究结果可继续渲染/发送；尚未保存结果的搜索 / 生成崩溃标记失败，避免重复付费；发送中崩溃标记 `uncertain`。目前没有自动核对远端或人工重发命令，可查看状态后重新提问。单进程独占数据目录，第二个进程启动报错。领取任务先持久化再出队，写入失败保留队列；取消排队任务立即释放容量。SIGTERM 先停止接收，再给在途工作默认 30 秒宽限。
+
+研究失败时，任务文件的 `failure` 保存搜索/读页/模型调用数及固定搜索故障类别计数；日志 `search_failures` 同步输出类别。不会把未完成答案放入可恢复交付的 `output`，也不保存这些故障的原始远端文本。旧任务没有此字段，不能据此推断历史故障原因。
 
 ## 占用与预算
 
@@ -154,13 +174,13 @@ Go 库入口：`search.NewProvider(name, config)`、`NewDDG`、`NewBrave` 等；
 
 任务和发送记录使用原子 JSON 文件、fsync 和目录锁，减少数据库依赖；适用于单机小到中等并发。多实例 / 大规模队列需替换存储接口。持久 Bot 服务支持 Linux / macOS；Windows 可用 CLI。
 
-同一用户在同一会话两秒内重复提交会被限流；服务默认不为被限流消息启动搜索。首次本地健康检查后空闲服务 RSS 约 12.6 MiB，仅为该机器上的启动样本，不能代表负载峰值。
+同一用户在同一会话两秒内重复提交会被限流；控制回复额度允许时提示稍后重发。被限流事件持久去重，即使暂不发送反馈，也不会在平台重投或服务重启后变成新搜索；已有搜索不被覆盖。首次本地健康检查后空闲服务 RSS 约 12.6 MiB，仅为该机器上的启动样本，不能代表负载峰值。
 
 未设置 `GOMEMLIMIT` 时主程序设置 96 MiB 的 Go GC 软预算，它不是 RSS 硬上限，也不包含 Typst 子进程。systemd 示例对整个服务设 384 MiB 硬限制，仍须实测调参；可选 Compose 使用同样限制。
 
 开发机 Apple M4、Go 1.27.2 合成基准：约 25 KB HTML 抽取本轮前 0.10 ms、284 KB 分配，本轮后约 0.12 ms、150 KB 分配（分配量减少约 47%，分配次数 943 → 630）。增加了空白、代码、表格与隐藏内容处理，耗时略有增加。新证据筛选在相同的 8 篇正文输入上约 0.55–0.65 ms、87 KB 分配；改动前约 0.30 ms、338 KB。本次以额外的本地计算换取排序、覆盖与冗余判断，分配量降低约 74%，没有声称算法耗时更短。`B/op` 是调用分配量，不是常驻内存；不包含联网、模型或 Typst。复测：`make bench`。
 
-网页读取只允许 HTTP(S) 公网 80/443，DNS 解析验证 IP 后连接，重定向重新校验。阻断内网、元数据与地址转换网段，不使用环境 HTTP 代理绕过检查。支持 UTF-8 HTML / 文本，复杂页面可显式用备用 Reader。
+网页读取只允许 HTTP(S) 公网 80/443，全部 DNS 地址先校验再连接字面 IP，重定向重新校验。DNS 与连接共享五秒预算，双栈最多两个地址族竞速，300毫秒后回退，取消并关闭落败连接；TLS/正文仍受原有读页 deadline 限制。阻断内网、元数据与地址转换网段，不使用环境 HTTP 代理绕过检查。支持 UTF-8 HTML / 文本，复杂页面可显式用备用 Reader。
 
 ## 离线评测
 

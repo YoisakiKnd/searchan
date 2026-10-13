@@ -164,8 +164,11 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 	}
 	switch cmd.Name {
 	case "search", "ask", "deep":
-		if cmd.Argument == "" || len(cmd.Argument) > 4096 {
-			return nil
+		if cmd.Argument == "" {
+			return s.reply(ctx, event, "请在命令后写上问题，例如：\n/search Spring Data 简介\n/search Go context 取消后 goroutine 会自动退出吗？")
+		}
+		if len(cmd.Argument) > 4096 {
+			return s.reply(ctx, event, "问题过长，请缩短后重新发送（最多 4096 字节）。")
 		}
 		// Bound the limiter map too. Updates are serialized with submissions so the
 		// queue's memory bound cannot be bypassed by concurrent webhook requests.
@@ -173,8 +176,12 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 		s.mu.Lock()
 		now := time.Now()
 		if previous := s.last[key]; now.Sub(previous) < 2*time.Second {
+			reply, fresh, err := s.beginReplyLocked(event)
 			s.mu.Unlock()
-			return nil
+			if err != nil || !fresh {
+				return err
+			}
+			return s.deliverReply(ctx, event, reply, "请求过快，请稍等两秒后重新发送问题。")
 		}
 		if len(s.last) >= 2048 {
 			for k, t := range s.last {
@@ -188,6 +195,20 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 			}
 		}
 		_, created, err := s.Store.SubmitLimited(event, cmd.Argument, s.Runtime.Config.MaxUserTasks, s.Runtime.Config.MaxChatTasks)
+		if errors.Is(err, task.ErrQuota) || errors.Is(err, task.ErrBusy) {
+			text := "已有较多搜索任务正在处理，请等待完成后重新发送。"
+			if errors.Is(err, task.ErrBusy) {
+				text = "搜索队列已满，请稍后重新发送。"
+			}
+			// Persist the rejected event before releasing submission serialization.
+			// A later webhook retry must not turn this rejection into paid work.
+			reply, fresh, replyErr := s.beginReplyLocked(event)
+			s.mu.Unlock()
+			if replyErr != nil || !fresh {
+				return replyErr
+			}
+			return s.deliverReply(ctx, event, reply, text)
+		}
 		if err == nil && created {
 			s.last[key] = now
 		}
@@ -203,15 +224,20 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 		}
 		return nil
 	case "cancel", "status", "sources":
+		if cmd.Argument == "" {
+			return s.reply(ctx, event, "请附上任务 ID，例如 /"+cmd.Name+" 任务ID。任务 ID 在搜索开始和结果消息中。")
+		}
 		rec, err := s.Store.Get(cmd.Argument)
 		if err != nil || !task.SameTarget(rec.Target, event.Target) {
-			return nil
+			return s.reply(ctx, event, "未找到本会话中的该任务，请核对任务 ID。")
 		}
-		text := "任务 " + rec.ID + "：" + rec.State
+		text := "任务 " + rec.ID + "：" + taskStateText(rec.State)
+		priority := false
 		if cmd.Name == "cancel" {
-			if err := s.Store.Cancel(rec.ID, event.Target); err != nil {
+			if changed, err := s.Store.CancelOnce(rec.ID, event.Target); err != nil {
 				text = "无法取消该任务"
 			} else {
+				priority = changed
 				s.mu.Lock()
 				cancel := s.cancel[rec.ID]
 				s.mu.Unlock()
@@ -221,24 +247,68 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 				text = "已取消任务 " + rec.ID
 			}
 		}
-		if cmd.Name == "sources" && rec.Output != nil {
-			text = sourcesText(*rec.Output, rec.ID)
+		if cmd.Name == "sources" {
+			if rec.Output != nil {
+				text = sourcesText(*rec.Output, rec.ID)
+			} else {
+				text += "\n来源尚未准备好。"
+			}
+		}
+		return s.replyWithPriority(ctx, event, text, priority)
+	case "start", "help":
+		text := "发送 /search 问题 开始搜索，/deep 问题 增加检索额度。\n例：/search Spring Data 和 Spring Framework 有什么区别？\n/status 任务ID 查看状态，/sources 任务ID 查看来源，/cancel 任务ID 取消任务。\n搜索结果优先以图片发送，并附来源链接。"
+		if event.Target.Platform == "telegram" && s.Runtime.Telegram != nil && s.Runtime.Telegram.Username != "" {
+			text += "\n群里可发送 /search@" + s.Runtime.Telegram.Username + " 问题，明确指定本机器人。"
+			text += "\n也可在消息开头发送 @" + s.Runtime.Telegram.Username + " 自然语言问题，例如：@" + s.Runtime.Telegram.Username + " Spring Data 是什么？"
+			text += "\n若群里的 @提问没有回应，请改用 /search@" + s.Runtime.Telegram.Username + " 问题，并请维护者检查群消息接收设置。"
+		}
+		if event.Target.Platform == "qq" && s.Runtime.OneBot != nil {
+			text += "\n群里也可在消息开头 @本机器人 后输入自然语言问题；只 @机器人 会显示帮助。结果以合并聊天记录发送。"
 		}
 		return s.reply(ctx, event, text)
-	case "start", "help":
-		return s.reply(ctx, event, "发送 /search 问题 开始搜索，/deep 问题 增加检索额度。\n/status 任务ID 查看状态，/sources 任务ID 查看来源，/cancel 任务ID 取消任务。\n搜索结果优先以图片发送，并附来源链接。")
 	}
 	return nil
 }
 
 func (s *Server) reply(ctx context.Context, event platform.Event, text string) error {
-	sender := s.Runtime.Senders[event.Target.Platform]
+	return s.replyWithPriority(ctx, event, text, false)
+}
+
+func (s *Server) replyWithPriority(ctx context.Context, event platform.Event, text string, priority bool) error {
 	// Persist command reply intent too: webhook retries must not repeat
 	// external sends after a timeout or an unknown delivery outcome.
-	reply, created, err := s.beginReply(event)
+	reply, created, err := s.beginReply(event, priority)
 	if err != nil || !created {
 		return err
 	}
+	return s.deliverReply(ctx, event, reply, text)
+}
+
+func taskStateText(state string) string {
+	switch state {
+	case "queued":
+		return "排队中"
+	case "running":
+		return "正在搜索和整理"
+	case "ready":
+		return "资料已整理，等待生成图片"
+	case "sending":
+		return "正在发送"
+	case "completed":
+		return "已完成"
+	case "cancelled":
+		return "已取消"
+	case "failed":
+		return "未能完成"
+	case "uncertain":
+		return "发送结果待核对，请先检查聊天记录，避免重复请求"
+	default:
+		return "状态待核对"
+	}
+}
+
+func (s *Server) deliverReply(ctx context.Context, event platform.Event, reply task.Record, text string) error {
+	sender := s.Runtime.Senders[event.Target.Platform]
 	replyCtx, stop := context.WithTimeout(ctx, 4*time.Second)
 	defer stop()
 	for i, chunk := range textChunks(text, 3000) {
@@ -268,13 +338,23 @@ func (s *Server) reply(ctx context.Context, event platform.Event, text string) e
 	return s.Store.Save(reply)
 }
 
-func (s *Server) beginReply(event platform.Event) (task.Record, bool, error) {
+func (s *Server) beginReply(event platform.Event, priority bool) (task.Record, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.beginReplyWithPriorityLocked(event, priority)
+}
+
+func (s *Server) beginReplyLocked(event platform.Event) (task.Record, bool, error) {
+	return s.beginReplyWithPriorityLocked(event, false)
+}
+
+func (s *Server) beginReplyWithPriorityLocked(event platform.Event, priority bool) (task.Record, bool, error) {
 	key := "control:" + event.Target.Platform + ":" + event.Target.ChatID + ":" + event.Target.UserID
 	now := time.Now()
-	if now.Sub(s.last[key]) < 2*time.Second {
-		return task.Record{}, false, nil
+	// Only a newly persisted cancellation gets priority, at most once per
+	// active task. Repeated commands still share the ordinary reply limiter.
+	if !priority && now.Sub(s.last[key]) < 2*time.Second {
+		return task.Record{}, false, s.Store.IgnoreEvent(event)
 	}
 	if len(s.last) >= 2048 {
 		for k, at := range s.last {
@@ -462,13 +542,22 @@ func (s *Server) process(parent context.Context, rec task.Record) {
 		rec.State = "ready"
 		return s.Store.Save(rec) == nil
 	}
-	fail := func(err error) {
+	fail := func(err error, stats research.Stats) {
 		rec.State = "failed"
 		rec.Error = err.Error()
+		rec.Failure = &task.FailureDiagnostic{SearchCalls: stats.SearchCalls, PagesRead: stats.PagesRead, ModelCalls: stats.ModelCalls}
+		for _, call := range stats.Calls {
+			if call.ErrorCode != "" {
+				if rec.Failure.SearchFailures == nil {
+					rec.Failure.SearchFailures = make(map[string]int)
+				}
+				rec.Failure.SearchFailures[call.ErrorCode]++
+			}
+		}
 		if s.Store.Save(rec) != nil {
 			return
 		}
-		slog.Error("task failed", "task", rec.ID, "error", err)
+		slog.Error("task failed", "task", rec.ID, "error", err, "validation", research.AnswerValidationCode(err), "search_calls", stats.SearchCalls, "model_calls", stats.ModelCalls, "search_failures", rec.Failure.SearchFailures)
 		if ctx.Err() == nil && send("failure", 0, func(seq int) (platform.Receipt, error) {
 			return sender.SendText(ctx, rec.Target, research.FailureMessage(err)+"\n任务："+rec.ID+"\n/status "+rec.ID, seq)
 		}) {
@@ -496,7 +585,7 @@ func (s *Server) process(parent context.Context, rec task.Record) {
 		}
 		stop()
 		if err != nil {
-			fail(err)
+			fail(err, output.Stats)
 			return
 		}
 		rec.Output = &output
