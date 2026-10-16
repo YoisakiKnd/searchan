@@ -15,7 +15,11 @@ type coverageCandidate struct {
 	Title   string `json:"title"`
 	Snippet string `json:"snippet,omitempty"`
 	Origin  string `json:"origin"`
-	hit     hit
+	// A fetched page explicitly links to this candidate. This describes the
+	// discovery path only; neither anchor text nor the referring page proves it.
+	ReferencedBy   string `json:"referenced_by,omitempty"`
+	ReferenceLabel string `json:"reference_label,omitempty"`
+	hit            hit
 }
 
 // Present existing leads, never generated URLs. Reserve a few slots for
@@ -24,42 +28,71 @@ type coverageCandidate struct {
 func (g *gathering) coverageCandidates() []coverageCandidate {
 	pool := make([]coverageCandidate, 0, 20)
 	seen := map[string]bool{}
-	add := func(h hit, origin string) {
+	add := func(h hit, origin string) int {
 		key := search.DocumentURL(h.URL)
-		if key == "" || len(key) > 2048 || seen[key] || g.reading.attempted[key] || reader.ValidateURL(key) != nil || len(pool) >= 20 {
-			return
+		if key == "" || len(key) > 2048 || g.reading.attempted[key] || reader.ValidateURL(key) != nil {
+			return -1
+		}
+		if seen[key] {
+			for i := range pool {
+				if pool[i].URL == key {
+					return i
+				}
+			}
+		}
+		if len(pool) >= 20 {
+			return -1
 		}
 		seen[key] = true
 		h.URL, h.pageKey = key, key
 		pool = append(pool, coverageCandidate{ID: fmt.Sprintf("c%d", len(pool)+1), URL: key, Title: reader.Clip(h.Title, 200), Snippet: reader.Clip(h.Snippet, 300), Origin: origin, hit: h})
-	}
-	ranked := rankHits(g.out.Plan, g.retrieval.hits, g.reading.attempted, 20)
-	for _, h := range ranked {
-		add(h, "search")
-		if len(pool) == 12 {
-			break
-		}
+		return len(pool) - 1
 	}
 	// Preserve discovery paths too: a generic API reference can rank below
 	// keyword-dense tutorials after fusion. The top two actual results of each
 	// original query get a chance to be assessed, without declaring them trusted.
+	// Add them before the lexical fill so all six can fit while retaining four
+	// reference slots. Adding them after twelve ranked hits can consume those
+	// slots before document links are considered.
 	for _, q := range g.out.Plan.Queries[:min(3, len(g.out.Plan.Queries))] {
 		for _, h := range queryLeaders(g.retrieval.hits, queryKey(q)) {
 			add(h, "search")
 		}
 	}
-	linkSets := [][]reader.Link{g.reading.hints}
-	for _, doc := range g.reading.docs {
-		linkSets = append(linkSets, doc.Links[:min(32, len(doc.Links))])
+	ranked := rankHits(g.out.Plan, g.retrieval.hits, g.reading.attempted, 20)
+	for _, h := range ranked {
+		add(h, "search")
+		if len(pool) >= 12 {
+			break
+		}
 	}
+	type references struct {
+		from  string
+		links []reader.Link
+	}
+	linkSets := make([]references, 0, len(g.reading.docs)+1)
+	for _, doc := range g.reading.docs {
+		linkSets = append(linkSets, references{from: doc.URL, links: doc.Links[:min(32, len(doc.Links))]})
+	}
+	// A successfully read page can provide the actual reference path. Hints
+	// retained from rejected/short pages must not mask it through deduplication.
+	linkSets = append(linkSets, references{links: g.reading.hints})
 	linked := 0
+	referencesSeen := map[string]bool{}
 links:
-	for _, links := range linkSets {
-		for _, link := range links {
+	for _, refs := range linkSets {
+		for _, link := range refs.links {
 			if referenceLabel(link.Text) {
-				before := len(pool)
-				add(hit{Result: search.Result{URL: link.URL, Title: link.Text}}, "document_link")
-				linked += len(pool) - before
+				i := add(hit{Result: search.Result{URL: link.URL, Title: link.Text}}, "document_link")
+				if i < 0 || referencesSeen[pool[i].URL] {
+					continue
+				}
+				referencesSeen[pool[i].URL] = true
+				linked++
+				if refs.from != "" && len(refs.from) <= 2048 && reader.ValidateURL(refs.from) == nil {
+					pool[i].ReferencedBy = refs.from
+					pool[i].ReferenceLabel = reader.Clip(link.Text, 160)
+				}
 				if linked == 4 {
 					break links
 				}
@@ -118,7 +151,7 @@ func referenceLabel(label string) bool {
 	}
 	for _, word := range strings.FieldsFunc(label, func(r rune) bool { return r < 'a' || r > 'z' }) {
 		switch word {
-		case "documentation", "docs", "reference", "specification", "paper":
+		case "documentation", "docs", "reference", "specification", "paper", "guidance":
 			return true
 		}
 	}

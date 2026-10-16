@@ -112,6 +112,146 @@ func TestCoveragePoolRetainsQueryLeadersBelowLexicalCutoff(t *testing.T) {
 	t.Fatal("original query leader was lost after fusion")
 }
 
+func TestCoveragePoolReservesReferencesAlongsideEveryQueryLeader(t *testing.T) {
+	e, _ := New(Config{Providers: []search.Provider{provider{"fixture", nil}}, Reader: unusedCandidateReader{}})
+	queries := []string{"Atlas retries", "Atlas isolation contract", "Atlas serialization conditions"}
+	out := Output{Plan: Plan{Queries: queries}}
+	g := newGathering(e, &out)
+	for i := range 25 {
+		g.retrieval.hits = append(g.retrieval.hits, hit{Result: search.Result{URL: fmt.Sprintf("https://tutorial.example/%d", i), Title: "Atlas retries Atlas retries Atlas retries"}, fusion: 1})
+	}
+	want := map[string]bool{}
+	for qi, query := range queries {
+		for rank := 1; rank <= 2; rank++ {
+			u := fmt.Sprintf("https://manual.example/query/%d/%d", qi, rank)
+			want[u] = true
+			g.retrieval.hits = append(g.retrieval.hits, hit{Result: search.Result{URL: u, Title: "Package overview"}, queryRanks: map[string]int{queryKey(query): rank}})
+		}
+	}
+	doc := reader.MakeDocument("https://article.example/atlas", "Atlas", "Atlas retry reference links", "fixture")
+	for i := range 4 {
+		u := fmt.Sprintf("https://source.example/spec/%d", i)
+		want[u] = true
+		doc.Links = append(doc.Links, reader.Link{URL: u, Text: "Reference specification"})
+	}
+	g.reading.docs = []reader.Document{doc}
+	pool := g.coverageCandidates()
+	if len(pool) > 20 {
+		t.Fatal("candidate limit exceeded")
+	}
+	for _, c := range pool {
+		delete(want, c.URL)
+	}
+	if len(want) != 0 {
+		t.Fatal("query leaders consumed reference reservation", want)
+	}
+}
+
+func TestReferenceLabelsIncludeSourceGuidance(t *testing.T) {
+	for _, label := range []string{"Atlas serialization failure guidance", "Guidance", "API guidance"} {
+		if !referenceLabel(label) {
+			t.Fatal("explicit source reference label lost", label)
+		}
+	}
+	for _, label := range []string{"Guidanceware discount", "Historical release party", "Paperwork", "Releases sale"} {
+		if referenceLabel(label) {
+			t.Fatal("ordinary substring mistaken for source reference", label)
+		}
+	}
+}
+
+func TestCoverageDuplicateSearchLeadRetainsFetchedReference(t *testing.T) {
+	e, _ := New(Config{Providers: []search.Provider{provider{"fixture", nil}}, Reader: unusedCandidateReader{}})
+	out := Output{Plan: Plan{Queries: []string{"Atlas retries"}}}
+	g := newGathering(e, &out)
+	u := "https://manual.example/retries"
+	g.retrieval.hits = []hit{{Result: search.Result{URL: u, Title: "Atlas retries manual"}, queryRanks: map[string]int{queryKey("Atlas retries"): 1}}}
+	doc := reader.MakeDocument("https://article.example/atlas", "Atlas", "Atlas retry analysis", "fixture")
+	doc.Links = []reader.Link{{URL: u + "#conditions", Text: "Atlas retry guidance"}, {URL: u, Text: "Repeated reference"}}
+	g.reading.docs = []reader.Document{doc}
+	g.reading.hints = []reader.Link{{URL: u, Text: "Official docs"}}
+	pool := g.coverageCandidates()
+	if len(pool) != 1 || pool[0].Origin != "search" || pool[0].ReferencedBy != doc.URL || pool[0].ReferenceLabel != doc.Links[0].Text {
+		t.Fatal("deduplication lost the fetched page's reference", pool)
+	}
+	if len(out.Evidence) != 0 || out.Stats.PagesRead != 0 {
+		t.Fatal("unread reference became evidence")
+	}
+}
+
+func TestCoverageReferenceMetadataIsBounded(t *testing.T) {
+	e, _ := New(Config{Providers: []search.Provider{provider{"fixture", nil}}, Reader: unusedCandidateReader{}})
+	out := Output{Plan: Plan{Queries: []string{"Atlas retry contract"}}}
+	g := newGathering(e, &out)
+	doc := reader.MakeDocument("https://article.example/atlas", "Atlas", "Atlas retry analysis", "fixture")
+	for i := range 30 {
+		u := fmt.Sprintf("https://manual.example/%d", i)
+		g.retrieval.hits = append(g.retrieval.hits, hit{Result: search.Result{URL: u, Title: "Atlas retry contract"}})
+		doc.Links = append(doc.Links, reader.Link{URL: u, Text: "Reference " + strings.Repeat("原文", 100)})
+	}
+	g.reading.docs = []reader.Document{doc}
+	references := 0
+	for _, c := range g.coverageCandidates() {
+		if c.ReferencedBy != "" {
+			references++
+			if c.ReferencedBy != doc.URL || len(c.ReferenceLabel) > 160 || !strings.HasPrefix(doc.Links[0].Text, c.ReferenceLabel) {
+				t.Fatal("unbounded or rewritten reference metadata", c)
+			}
+		}
+	}
+	if references != 4 {
+		t.Fatal("reference metadata reservation not bounded", references)
+	}
+}
+
+func TestRelevantReferenceIsReadBeforeCoverage(t *testing.T) {
+	const original = "Atlas retry failure handling"
+	p := provider{"fixture", func(context.Context, search.Request) (search.Response, error) {
+		var results []search.Result
+		for i := range 3 {
+			results = append(results, search.Result{URL: fmt.Sprintf("https://article.example/%d", i), Title: original})
+		}
+		return search.Response{Results: results}, nil
+	}}
+	reads := 0
+	r := readFunc(func(_ context.Context, u string) (reader.Document, error) {
+		if u == "https://manual.example/atlas/retry" {
+			reads++
+			return reader.MakeDocument(u, "Atlas retry contract", "Atlas retry failure handling requires retrying the complete transaction, not only its last statement.", "fixture"), nil
+		}
+		doc := reader.MakeDocument(u, original, "Atlas retry failure handling is described in this tutorial with examples of retry behavior.", "fixture")
+		doc.Links = []reader.Link{{URL: "https://manual.example/atlas/retry", Text: "Atlas retry guidance"}}
+		return doc, nil
+	})
+	m := modelFunc(func(_ context.Context, prompt string, input, output any) error {
+		if prompt == plannerPrompt {
+			return assign(output, `{"intent":"howto","queries":["Atlas retry failure handling"],"aspects":["retry contract"]}`)
+		}
+		fields := input.(map[string]any)
+		var id string
+		for _, e := range fields["evidence"].([]modelEvidence) {
+			if strings.Contains(e.Text, "complete transaction") {
+				id = e.ID
+			}
+		}
+		if id == "" {
+			t.Fatal("reference was deferred to an unreliable coverage selection")
+		}
+		if prompt == coveragePrompt {
+			return assign(output, `{"answers_query":true,"missing":[],"queries":[],"read_ids":[]}`)
+		}
+		return assign(output, fmt.Sprintf(`{"answers_query":true,"title":"Atlas retries","lead":{"text":"Retry the complete transaction.","evidence_ids":[%q]},"sections":[],"uncertainties":[]}`, id))
+	})
+	e, err := New(Config{Providers: []search.Provider{p}, Reader: r, Model: m, PlanWithModel: true, MaxPages: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := e.Run(context.Background(), original)
+	if err != nil || reads != 1 || out.Stats.DiscoveryReads != 1 || out.Stats.PagesRead != 4 || out.Stats.ModelCalls != 3 || out.Stats.SearchCalls != 1 {
+		t.Fatalf("reference discovery changed shared budgets: %+v reads=%d err=%v", out.Stats, reads, err)
+	}
+}
+
 func TestQueryLeadersUseEachQueriesActualRanks(t *testing.T) {
 	hits := []hit{
 		{Result: search.Result{URL: "https://a.example"}, queryRanks: map[string]int{"english": 7, "chinese": 1}},
