@@ -133,7 +133,9 @@ func extractPage(r io.Reader, pageURL string) (string, string, bool, []Link, err
 
 func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []Link, []Heading, error) {
 	base, _ := url.Parse(pageURL)
+	selfURL, _, _ := strings.Cut(pageURL, "#")
 	var links []Link
+	var sameSite []Link
 	seenLinks := map[string]bool{}
 	z := html.NewTokenizer(r)
 	z.SetMaxBuf(256 << 10)
@@ -153,7 +155,7 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 		linkClosed := false
 		headingClosed := false
 		for _, f := range stack[i:] {
-			linkClosed = linkClosed || f.link > 0
+			linkClosed = linkClosed || f.link != 0
 			headingClosed = headingClosed || f.heading > 0
 			if f.skip {
 				skip--
@@ -187,7 +189,7 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 		if linkClosed {
 			activeLink = 0
 			for j := len(stack) - 1; j >= 0; j-- {
-				if stack[j].link > 0 {
+				if stack[j].link != 0 {
 					activeLink = stack[j].link
 					break
 				}
@@ -214,6 +216,13 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 			if strings.TrimSpace(main.b.String()) != "" {
 				text, headings = main.result()
 				truncated = main.truncated
+			}
+			// External sources retain all 32 slots. At most eight same-site
+			// body links fill unused slots, never displacing external references.
+			if len(links) == 0 {
+				links = sameSite
+			} else {
+				links = append(links, sameSite[:min(len(sameSite), 32-len(links))]...)
 			}
 			return strings.TrimSpace(title.b.String()), text, truncated, links, headings, nil
 		case html.StartTagToken, html.SelfClosingTagToken:
@@ -271,12 +280,20 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 				if target, err := base.Parse(href); err == nil {
 					target.Fragment = ""
 					raw := target.String()
-					// External links only: navigation on the same site otherwise
-					// consumes the small discovery budget before original sources.
-					if len(raw) <= 2048 && target.Hostname() != base.Hostname() && !seenLinks[raw] && ValidateURL(raw) == nil {
-						seenLinks[raw] = true
-						links = append(links, Link{URL: raw})
-						f.link = len(links)
+					if len(raw) <= 2048 && !seenLinks[raw] && ValidateURL(raw) == nil {
+						local := strings.EqualFold(target.Hostname(), base.Hostname())
+						if local && primary > 0 && len(sameSite) < 8 && raw != selfURL {
+							// Followable references can be on the same documentation
+							// site. Collect only links inside a visible primary body;
+							// they have a separate small reserve until extraction ends.
+							seenLinks[raw] = true
+							sameSite = append(sameSite, Link{URL: raw})
+							f.link = -len(sameSite)
+						} else if !local {
+							seenLinks[raw] = true
+							links = append(links, Link{URL: raw})
+							f.link = len(links)
+						}
 					}
 				}
 			}
@@ -312,7 +329,7 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 				if f.heading > 0 {
 					activeHeading = len(stack)
 				}
-				if f.link > 0 {
+				if f.link != 0 {
 					activeLink = f.link
 				}
 				if f.skip {
@@ -363,8 +380,13 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 				title.text(raw, false)
 			}
 			if skip == 0 && inTitle == 0 {
-				if activeLink > 0 {
-					link := &links[activeLink-1]
+				if activeLink != 0 {
+					var link *Link
+					if activeLink > 0 {
+						link = &links[activeLink-1]
+					} else {
+						link = &sameSite[-activeLink-1]
+					}
 					if len(link.Text) < 160 {
 						link.Text = Clip(strings.TrimSpace(link.Text+" "+strings.TrimSpace(Clip(string(raw), 160))), 160)
 					}

@@ -86,6 +86,19 @@ func TestNumberedRFCReferenceLabelsAreStrict(t *testing.T) {
 	}
 }
 
+func TestKeywordReferenceLabelsAreWholeWordsOnly(t *testing.T) {
+	for _, label := range []string{"Repository query keywords", "SQL Keywords", "KEYWORDS"} {
+		if !referenceLabel(label) {
+			t.Fatal("keyword reference was not presented as a lead", label)
+		}
+	}
+	for _, label := range []string{"keywordstuffing", "mykeywordsplugin", "keywordsale"} {
+		if referenceLabel(label) {
+			t.Fatal("partial keyword marker admitted a non-reference", label)
+		}
+	}
+}
+
 func TestCoveragePoolRetainsQueryLeadersBelowLexicalCutoff(t *testing.T) {
 	e, _ := New(Config{Providers: []search.Provider{provider{"fixture", nil}}, Reader: unusedCandidateReader{}})
 	out := Output{Plan: Plan{Queries: []string{"Atlas 取消是否自动停止工作", "Atlas cancellation API reference"}}}

@@ -2,6 +2,8 @@ package research
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,44 @@ import (
 	"searchan/reader"
 	"searchan/search"
 )
+
+func TestSameSiteBodyReferenceReachesExistingDiscoveryAndEvidence(t *testing.T) {
+	const page = "https://docs.example/atlas/start"
+	const contract = "https://docs.example/atlas/retry"
+	var visits []string
+	r := reader.NewHTTP(&http.Client{Transport: evidenceWireTransport(func(req *http.Request) (*http.Response, error) {
+		visits = append(visits, req.URL.String())
+		body := `<main><p>Atlas retry examples introduce concurrent transaction conflict handling.</p><a href="/atlas/retry#contract">Atlas retry keywords</a></main>`
+		if req.URL.String() == contract {
+			body = `<main><h1>Atlas retry contract</h1><p>Atlas retry requires retrying the complete transaction after a serialization conflict.</p><a href="/atlas/another">Atlas retry reference</a></main>`
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})})
+	doc, err := r.Read(context.Background(), page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, _ := New(Config{Providers: []search.Provider{provider{"fixture", nil}}, Reader: r})
+	out := Output{Plan: Plan{Queries: []string{"Atlas retry contract"}}, Stats: Stats{PagesRead: 1}}
+	g := newGathering(e, &out)
+	g.reading.docs = []reader.Document{doc}
+	g.reading.attempted[page] = true
+	pool := g.coverageCandidates()
+	if len(pool) != 1 || pool[0].URL != contract || pool[0].ReferencedBy != page || len(out.Evidence) != 0 {
+		t.Fatal("same-site path was dropped or became unread evidence", pool, out)
+	}
+	g.readRelevantReference(context.Background(), 2)
+	g.readRelevantReference(context.Background(), 8)
+	found := false
+	for _, ev := range out.Evidence {
+		if ev.URL == contract && strings.Contains(ev.Text, "complete transaction") && ev.Kind == "body" {
+			found = true
+		}
+	}
+	if !found || len(visits) != 2 || visits[1] != contract || out.Stats.PagesRead != 2 || out.Stats.DiscoveryReads != 1 || out.Stats.ModelCalls != 0 {
+		t.Fatalf("same-site reference did not follow bounded discovery: visits=%v output=%+v", visits, out)
+	}
+}
 
 func TestReferenceDiscoveryUsesOneHopAndSharedPageBudget(t *testing.T) {
 	for _, mode := range []string{"read", "full", "cancelled", "attempted", "unrelated_body"} {

@@ -16,6 +16,32 @@ import (
 	"searchan/internal/fsutil"
 )
 
+func TestCacheRefreshesExtractorThatDiscardedSameSiteReferences(t *testing.T) {
+	u := "https://docs.example/atlas"
+	calls := 0
+	r := NewHTTP(&http.Client{Transport: roundTripper(func(req *http.Request) (*http.Response, error) {
+		calls++
+		body := `<main><p>Atlas retry documentation explains the complete transaction contract.</p><a href="/atlas/retry">Atlas retry reference</a></main>`
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	})})
+	c := &Cache{Dir: t.TempDir(), TTL: time.Hour, Next: r}
+	hash := sha256.Sum256([]byte("page-text-v6\x00" + u))
+	oldPath := filepath.Join(c.Dir, hex.EncodeToString(hash[:])+".json")
+	legacy := MakeDocument(u, "Atlas", "Atlas retry documentation explains the complete transaction contract.", "http")
+	if err := fsutil.WriteJSON(oldPath, legacy); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		doc, err := c.Read(context.Background(), u)
+		if err != nil || calls != 1 || len(doc.Links) != 1 || doc.Links[0].URL != "https://docs.example/atlas/retry" {
+			t.Fatalf("v6 cache hid same-site reference or v7 cache missed: %+v calls=%d err=%v", doc, calls, err)
+		}
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatal("refresh removed original cache data", err)
+	}
+}
+
 func TestContentRejectsInterstitialsWithoutRejectingExplanations(t *testing.T) {
 	for _, tt := range []struct {
 		title, text string

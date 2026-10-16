@@ -151,7 +151,7 @@ func referenceLabel(label string) bool {
 	}
 	for _, word := range strings.FieldsFunc(label, func(r rune) bool { return r < 'a' || r > 'z' }) {
 		switch word {
-		case "documentation", "docs", "reference", "specification", "paper", "guidance":
+		case "documentation", "docs", "reference", "specification", "paper", "guidance", "keywords":
 			return true
 		}
 	}

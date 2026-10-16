@@ -2,7 +2,7 @@
 
 2026-10-12，macOS arm64，Go 1.27.2，Typst 0.15.1，govulncheck 1.8.0。状态：用户已开始 Linux 部署联调，完整生产验收尚未完成。
 
-最新本地状态（2026-10-17）：可选三协议原生Schema及本地严格校验已实现，默认关闭；最终全量工程检查通过。同一模型的原始SpringData简介完整实网链路约15秒生成单图，事实复核通过，但举例引用不完整；复杂资料的语义与范围问题仍未闭合，不能正式上线。详见 [QUALITY_ITERATION_34.md](QUALITY_ITERATION_34.md)。此前3463141的[Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/38938378723)通过安装、升级/回滚和双架构打包；新改动以对应远端运行结果为准。完整质量与目标环境门槛未完成；以下为历史记录。
+最新本地状态（2026-10-17）：同站正文参考发现及v7缓存刷新已实现，本轮完整工程检查通过。逐单位引句核验候选未改善范围判断，未采用；findBy回放与新实网均单图完成，但事实unclear，原始候选仍可能被模型跳过，不能正式上线。详见 [QUALITY_ITERATION_35.md](QUALITY_ITERATION_35.md)。此前61cb5db的[Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/38949936424)通过安装、升级/回滚和双架构打包；本轮改动以对应提交的远端运行结果为准。完整质量与目标环境门槛未完成；以下为历史记录。
 
 RC.6 发布准备：包含自适应取证、本地 quality 测试、简单简介写作范围、正文边界及安全 JSON 诊断。本地完整检查通过，新增错误隐私/不重试用例另通过 model/quality race。四份原 HTML 边界检查通过，但第三轮真实模型五次尝试只有两次完成、三次失败，准确性与稳定性仍未通过；详见 [QUALITY_ITERATION_03.md](QUALITY_ITERATION_03.md) 与 [CHANGELOG.md](CHANGELOG.md)。Linux 包补齐公开题集及效果测试说明；私有配置、HTML/正文快照和 PNG 均不发布。远端构建状态以 Actions 为准。
 
