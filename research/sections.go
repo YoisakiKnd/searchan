@@ -27,7 +27,17 @@ func documentPassages(doc reader.Document) []passage {
 	heading := ""
 	emit := func(end int) {
 		section := text[start:end]
-		parts := splitPassages(section)
+		body := section
+		// An explicitly labeled generated overview is a separate derivative
+		// widget, not the article's own supporting text. Omit only short blocks
+		// terminated by a validated heading with substantive body after it.
+		// Preserve the fetched document and original paragraph coordinates.
+		if end < len(text) && len(strings.TrimSpace(text[end:])) >= 200 {
+			if cut := generatedOverviewStart(section); cut >= 0 {
+				body = section[:cut]
+			}
+		}
+		parts := splitPassages(body)
 		for i := range parts {
 			parts[i].first += paragraph - 1
 			parts[i].last += paragraph - 1
@@ -47,4 +57,28 @@ func documentPassages(doc reader.Document) []passage {
 	}
 	emit(len(text))
 	return out
+}
+
+func generatedOverviewStart(section string) int {
+	if len(section) > 4096 {
+		return -1
+	}
+	start := 0
+	for start < len(section) && start <= 1024 {
+		end := strings.Index(section[start:], "\n\n")
+		if end < 0 {
+			break
+		}
+		end += start
+		if end-start <= 96 {
+			label := strings.TrimSpace(section[start:end])
+			if strings.EqualFold(label, "AI Summary") || strings.EqualFold(label, "AI-generated summary") || strings.EqualFold(label, "AI generated summary") || strings.EqualFold(label, "AI生成摘要") || strings.EqualFold(label, "AI 生成摘要") || label == "人工智能生成摘要" {
+				if strings.TrimSpace(section[end+2:]) != "" {
+					return start
+				}
+			}
+		}
+		start = end + 2
+	}
+	return -1
 }

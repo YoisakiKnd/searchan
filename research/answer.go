@@ -163,6 +163,16 @@ func (e *Engine) summarize(ctx context.Context, out *Output, recoverEvidence fun
 	return nil
 }
 
+const syntaxCorrection = "\n上次输出未能通过 JSON 语法或字段类型校验。本次采用最小结构重新生成：title 最多20字符，lead 只写一个直接回答问题的短段落，通常不超过160字符，不凑字数，sections=[]，不输出 table，uncertainties 最多一条必要限制。保留 answers_query 与必要 missing。只根据本次原始 evidence 生成完整 JSON 对象，字符串中的换行、双引号和反斜杠必须正确转义；不要输出解释或代码围栏，不增加无证据事实。"
+
+// General writing has examples and a larger layout. A syntax retry must not
+// inherit those instructions while also requesting an empty section list.
+// Specialized fact/intro/comparison and brief prompts retain their scope rules.
+const minimalGeneralRegenerationPrompt = answerEvidenceRules + `
+只输出一个完整JSON对象：
+{"answers_query":true,"title":"短标题","lead":{"text":"核心回答与必要条件","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}。
+回答原query，不扩写检索aspects。只保留回答核心问题所需的事实；原文示例不代表所有实现。没有证据支持核心答案时，answers_query=false，missing最多四项具体缺口，不编造答案。` + syntaxCorrection
+
 func (e *Engine) generate(ctx context.Context, out *Output, prompt string, input any, reserve bool) (Answer, error) {
 	var a Answer
 	if err := ctx.Err(); err != nil {
@@ -183,7 +193,11 @@ func (e *Engine) generate(ctx context.Context, out *Output, prompt string, input
 		if answerCtx.Err() == nil && time.Until(deadline) >= 2*time.Second && out.Stats.ModelCalls+reserved < maxModelCalls {
 			out.Stats.OutputRetries++
 			a = Answer{}
-			err = e.complete(answerCtx, out, prompt+"\n上次输出未能通过 JSON 语法或字段类型校验。本次采用最小结构重新生成：title 最多20字符，lead 只写一个直接回答问题的短段落，通常不超过160字符，不凑字数，sections=[]，不输出 table，uncertainties 最多一条必要限制。保留 answers_query 与必要 missing。只根据本次原始 evidence 生成完整 JSON 对象，字符串中的换行、双引号和反斜杠必须正确转义；不要输出解释或代码围栏，不增加无证据事实。", input, &a)
+			retryPrompt := prompt + syntaxCorrection
+			if prompt == answerPrompt {
+				retryPrompt = minimalGeneralRegenerationPrompt
+			}
+			err = e.complete(answerCtx, out, retryPrompt, input, &a)
 		}
 	}
 	if err != nil {

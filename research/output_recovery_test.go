@@ -45,6 +45,9 @@ func TestOutputRecoveryIsFreshValidatedAndBounded(t *testing.T) {
 					if output.(*Answer).Sections != nil || !strings.Contains(prompt, "生成完整 JSON") || !strings.Contains(prompt, "sections=[]") {
 						t.Fatal("partial draft or missing regeneration instructions")
 					}
+					if strings.Contains(prompt, "结构上限6节") || !strings.Contains(prompt, answerEvidenceRules) {
+						t.Fatal("minimal regeneration inherited the full layout or lost evidence rules")
+					}
 					if second == "invalid_json" {
 						return failure
 					}
@@ -95,5 +98,26 @@ func TestOutputRecoveryPreservesTimeAndVerificationBudget(t *testing.T) {
 				t.Fatalf("recovery exceeded budget: %+v %v", out.Stats, err)
 			}
 		})
+	}
+}
+
+func TestSpecializedOutputRecoveryKeepsScopeRules(t *testing.T) {
+	failure := modelOutputFailure(t, `{"lead":`)
+	for _, prompt := range []string{factPrompt, introductionPrompt, comparisonPrompt, briefPrompt} {
+		calls := 0
+		e := &Engine{cfg: Config{ModelTimeout: 5 * time.Second, Model: modelFunc(func(_ context.Context, got string, input, output any) error {
+			calls++
+			if calls == 1 {
+				return failure
+			}
+			if !strings.HasPrefix(got, prompt) || !strings.Contains(got, syntaxCorrection) {
+				t.Fatal("specialized writing scope lost during format recovery")
+			}
+			return assign(output, `{"title":"Summary","lead":{"text":"Supported fact","evidence_ids":["e1"]}}`)
+		})}}
+		out := Output{Evidence: []Evidence{{ID: "e1"}}}
+		if _, err := e.generate(context.Background(), &out, prompt, nil, false); err != nil || calls != 2 {
+			t.Fatalf("specialized recovery failed: calls=%d err=%v", calls, err)
+		}
 	}
 }

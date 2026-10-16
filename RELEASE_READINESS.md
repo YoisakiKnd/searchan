@@ -2,7 +2,7 @@
 
 2026-10-12，macOS arm64，Go 1.27.2，Typst 0.15.1，govulncheck 1.8.0。状态：用户已开始 Linux 部署联调，完整生产验收尚未完成。
 
-最新开发候选状态：第四至二十八轮ef615a2已通过[该提交Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/38337812937)。第二十九轮可选用量观测随后通过完整工程检查，正常当前模型的两阶段用量已实际落盘；审批额度阻塞已解除。新提交须单独核对Linux CI，不能沿用旧绿灯；本轮不正式发布。模型范围错误、8条预留题有效联网结果、完整质量及目标环境验收仍未完成。详情见 [QUALITY_ITERATION_30.md](QUALITY_ITERATION_30.md)。以下为历史记录。
+最新本地状态（2026-10-17）：完整工程验收通过，新增通用独立 JSON 重生成和有界生成摘要隔离；同一模型在保存网页上完成单图，但首次 JSON 失败和事实范围问题仍在，不能正式上线。详见 [QUALITY_ITERATION_32.md](QUALITY_ITERATION_32.md)。此前156ea74的[普通Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/38355674330)和[免费DDG诊断](https://github.com/YoisakiKnd/searchan/actions/runs/38355722098)分别通过，第31轮十次真实运行详见 [记录](QUALITY_ITERATION_31.md)。完整质量、独立人工及目标环境门槛未完成。未合并/tag或正式发布；以下为历史记录。
 
 RC.6 发布准备：包含自适应取证、本地 quality 测试、简单简介写作范围、正文边界及安全 JSON 诊断。本地完整检查通过，新增错误隐私/不重试用例另通过 model/quality race。四份原 HTML 边界检查通过，但第三轮真实模型五次尝试只有两次完成、三次失败，准确性与稳定性仍未通过；详见 [QUALITY_ITERATION_03.md](QUALITY_ITERATION_03.md) 与 [CHANGELOG.md](CHANGELOG.md)。Linux 包补齐公开题集及效果测试说明；私有配置、HTML/正文快照和 PNG 均不发布。远端构建状态以 Actions 为准。
 

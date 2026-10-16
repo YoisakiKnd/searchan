@@ -62,6 +62,59 @@ func TestInvalidOutlineKeepsLegacySplit(t *testing.T) {
 	}
 }
 
+func TestGeneratedOverviewDoesNotDisplaceArticleBody(t *testing.T) {
+	prefix := "Vector Store query internals\n\n"
+	widget := "AI Summary\n\n" + strings.Repeat("Vector Store query parser uses InventedClause. ", 12) + "\n\n"
+	body := "Query parsing\n\n" + strings.Repeat("Vector Store parses method names into property predicates. ", 12)
+	doc := outlinedFixture(prefix+widget+body, "Vector Store query internals", "Query parsing")
+	doc.Title = "Vector Store query internals"
+	pieces := documentPassages(doc)
+	for _, p := range pieces {
+		if strings.Contains(p.text, "InventedClause") {
+			t.Fatal("separately labeled generated overview admitted as article evidence")
+		}
+		if !strings.Contains(doc.Text, p.text) {
+			t.Fatal("article evidence was rewritten")
+		}
+		if strings.Contains(p.text, "property predicates") && p.first != strings.Count((prefix+widget), "\n\n")+1 {
+			t.Fatal("omitted widget shifted original paragraph positions", p)
+		}
+	}
+	ev := SelectEvidence("Vector Store query parser", []reader.Document{doc}, nil, 3)
+	if len(ev) == 0 || strings.Contains(ev[0].Text, "InventedClause") {
+		t.Fatal("generated keyword repetition displaced substantive body", ev)
+	}
+}
+
+func TestGeneratedOverviewFilteringRequiresBoundedSeparateBlock(t *testing.T) {
+	body := "Details\n\n" + strings.Repeat("Vector Store query documentation and examples. ", 12)
+	for _, label := range []string{"AI Summary", "AI-generated summary", "AI 生成摘要", "人工智能生成摘要"} {
+		text := "Article\n\n" + label + "\n\nGenerated overview.\n\n" + body
+		doc := outlinedFixture(text, "Article", label, "Details")
+		for _, p := range documentPassages(doc) {
+			if strings.Contains(p.text, "Generated overview.") {
+				t.Fatal("separate generated heading retained", label, p)
+			}
+		}
+	}
+	for _, label := range []string{"Summary", "AI Summary is a feature explained below.", "Example: AI Summary", "人工智能摘要算法"} {
+		doc := outlinedFixture(label+"\n\n"+body, "Details")
+		got := documentPassages(doc)
+		if len(got) == 0 || !strings.Contains(got[0].text, label) {
+			t.Fatal("ordinary summary or article sentence removed", label, got)
+		}
+	}
+	for _, doc := range []reader.Document{
+		{Text: "AI Summary\n\nVector Store parses methods."},                        // no validated section boundary
+		outlinedFixture("AI Summary\n\nVector Store parses methods.", "AI Summary"), // whole page
+		outlinedFixture("AI Summary\n\n"+strings.Repeat("Long article body. ", 300)+"\n\n"+body, "Details"),
+	} {
+		if got := documentPassages(doc); len(got) == 0 || !strings.Contains(got[0].text, "AI Summary") {
+			t.Fatal("ambiguous or unbounded content removed", got)
+		}
+	}
+}
+
 func TestIntroductionRetainsEarlySectionWithoutRepeatedEntity(t *testing.T) {
 	definition := "Vector Store provides a consistent data access model while retaining storage-specific features."
 	features := "Features\n\nRepository abstractions and object mapping. Queries are derived from method names, with auditing and extension points."

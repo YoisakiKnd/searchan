@@ -2,7 +2,7 @@
 
 本地真实搜索、AI 总结及 Typst 效果测试见 [QUALITY_EVALUATION.md](QUALITY_EVALUATION.md)：固定 30 条复核题，默认先跑 3 条，保存搜索/正文快照和最终图片，并逐条检查事实与引用支持。
 
-最新记录见 [QUALITY_ITERATION_30.md](QUALITY_ITERATION_30.md)：可选用量观测已通过完整工程检查，当前模型正常固定证据流程的请求尝试及token用量实际落盘，单图已查看。较短选段和逐来源范围候选未解决缺口，均不采用；已知JWT范围错误及正式质量门槛仍未通过。新改动在开发分支验收，不正式发布，Linux结果以对应提交Actions为准。
+最新实测见 [QUALITY_ITERATION_32.md](QUALITY_ITERATION_32.md)：审批恢复后完整工程检查通过；通用 JSON 重生成采用独立最小提示，并隔离网页中明确标注的独立生成摘要。九组保存网页只有 findBy 选段改变；当前模型单题复测约5.6秒完成一张图，但首次 JSON 失败和事实范围问题仍在，不能正式上线。第31轮真实搜索与图片审阅另见 [记录](QUALITY_ITERATION_31.md)。
 
 Go 搜索 Bot：多后端检索 → 读取网页 → 筛选证据 → 带引用总结与核验 → Typst 渲染 PNG → Telegram / QQ 回复。不读取群聊历史。
 
