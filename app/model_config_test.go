@@ -16,16 +16,26 @@ func TestModelConfigurationAndIsolatedHTTPBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 		m := r.Model.(*model.Client)
-		if m.API != api || m.MaxRetries != 0 || len(r.Clients) != 2 || r.Clients[0] == m.Client || m.Client.Timeout != 45*time.Second || m.Client.Transport.(*http.Transport).ResponseHeaderTimeout != 0 {
+		if m.API != api || m.StructuredOutput || m.MaxRetries != 0 || len(r.Clients) != 2 || r.Clients[0] == m.Client || m.Client.Timeout != 45*time.Second || m.Client.Transport.(*http.Transport).ResponseHeaderTimeout != 0 {
 			t.Fatalf("model settings not wired: %+v", m)
 		}
 		r.Close()
 	}
-	for key, value := range map[string]string{"MODEL_API": "wrong", "MODEL_AUTH": "wrong", "MODEL_RETRIES": "2", "MODEL_THINKING": "wrong", "MODEL_REASONING_EFFORT": "wrong", "MODEL_TOKEN_PARAMETER": "wrong", "MODEL_THINKING_BUDGET": "-1"} {
+	for key, value := range map[string]string{"MODEL_API": "wrong", "MODEL_AUTH": "wrong", "MODEL_RETRIES": "2", "MODEL_THINKING": "wrong", "MODEL_REASONING_EFFORT": "wrong", "MODEL_TOKEN_PARAMETER": "wrong", "MODEL_THINKING_BUDGET": "-1", "MODEL_STRUCTURED_OUTPUT": "wrong"} {
 		env := map[string]string{"MODEL_ENDPOINT": "https://gateway.example/custom", "MODEL_NAME": "fixture", key: value}
 		if r, err := New(func(k string) string { return env[k] }); err == nil {
 			r.Close()
 			t.Fatalf("invalid %s accepted", key)
 		}
+	}
+	r, err := New(func(k string) string {
+		return map[string]string{"MODEL_ENDPOINT": "https://gateway.example/responses", "MODEL_NAME": "fixture", "MODEL_STRUCTURED_OUTPUT": "true"}[k]
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	if !r.Model.(*model.Client).StructuredOutput {
+		t.Fatal("structured output setting not wired")
 	}
 }

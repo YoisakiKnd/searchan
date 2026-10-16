@@ -272,6 +272,10 @@ func NewWithResearch(getenv func(string) string, configure func(*research.Config
 		if err != nil {
 			return nil, err
 		}
+		structuredOutput, err := boolEnv(getenv, "MODEL_STRUCTURED_OUTPUT", false)
+		if err != nil {
+			return nil, err
+		}
 		retries, err := intEnv(getenv, "MODEL_RETRIES", 1)
 		if err != nil || retries < 0 || retries > 1 {
 			return nil, errors.New("MODEL_RETRIES must be 0 or 1")
@@ -283,7 +287,7 @@ func NewWithResearch(getenv func(string) string, configure func(*research.Config
 		completion := &model.Client{
 			Endpoint: endpoint, APIKey: getenv("MODEL_API_KEY"), Model: getenv("MODEL_NAME"),
 			API: getenv("MODEL_API"), Auth: getenv("MODEL_AUTH"), AnthropicVersion: getenv("MODEL_ANTHROPIC_VERSION"),
-			MaxTokens: maxTokens, TokenParameter: getenv("MODEL_TOKEN_PARAMETER"), JSONMode: jsonMode,
+			MaxTokens: maxTokens, TokenParameter: getenv("MODEL_TOKEN_PARAMETER"), JSONMode: jsonMode, StructuredOutput: structuredOutput,
 			Thinking: getenv("MODEL_THINKING"), ThinkingBudget: thinkingBudget,
 			ReasoningEffort: getenv("MODEL_REASONING_EFFORT"), MaxRetries: retries,
 		}

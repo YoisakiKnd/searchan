@@ -3,6 +3,7 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -24,6 +25,7 @@ type Client struct {
 	MaxTokens               int
 	TokenParameter          string // auto, max_tokens, max_completion_tokens (chat only)
 	JSONMode                bool
+	StructuredOutput        bool   // opt-in native JSON Schema; requires a typed object result
 	Thinking                string // auto, enabled, disabled, adaptive (Anthropic only)
 	ThinkingBudget          int    // Anthropic enabled mode only
 	ReasoningEffort         string // optional; accepted values depend on the model
@@ -70,11 +72,24 @@ func (c *Client) CompleteObserved(ctx context.Context, system string, input, out
 	if len(data) > 128<<10 {
 		return errors.New("model input exceeds 128 KiB")
 	}
+	var schema *outputSchema
+	if c.StructuredOutput {
+		schema, err = schemaForOutput(out)
+		if err != nil {
+			return err
+		}
+		// Keep optional-content examples from contradicting the native schema's
+		// required keys. This does not add facts or relax local validation.
+		system += "\n按响应 JSON Schema 输出。顶层必须包含这些字段：" + schema.required + "。无内容的数组填[]，可空字段按schema填null；不省略required字段，不为填字段补充事实。"
+	}
 	api, headers, payload, err := c.request(system, data)
 	if err != nil {
 		return err
 	}
 	metrics.API = api
+	if schema != nil {
+		applyOutputSchema(api, payload, schema.data)
+	}
 	client := c.Client
 	if client == nil {
 		client = defaultClient
@@ -117,6 +132,14 @@ func (c *Client) CompleteObserved(ctx context.Context, system string, input, out
 		content = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(content, "```json"), "```"))
 	}
 	err = decodeOutput(content, out)
+	if err == nil && schema != nil && !schema.shape.matches(json.RawMessage(content)) {
+		cause, field := schema.shape.issue(json.RawMessage(content), "")
+		form := "other"
+		if strings.HasPrefix(content, "{") {
+			form = "object"
+		}
+		err = &OutputError{kind: "schema", cause: cause, field: allowedOutputField(field), bytes: len(content), form: form}
+	}
 	var invalid *OutputError
 	if errors.As(err, &invalid) {
 		wire.annotateOutputError(api, invalid)

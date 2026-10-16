@@ -2,7 +2,7 @@
 
 本地真实搜索、AI 总结及 Typst 效果测试见 [QUALITY_EVALUATION.md](QUALITY_EVALUATION.md)：固定 30 条复核题，默认先跑 3 条，保存搜索/正文快照和最终图片，并逐条检查事实与引用支持。
 
-最新实测见 [QUALITY_ITERATION_33.md](QUALITY_ITERATION_33.md)：补齐参考链接位置、保留实际引用路径，并在现有预算内最多主动补读一页。完整工程检查通过；新 DDG 单题约15秒生成单图且读到原始规范，但当前模型仍混用二手错误与原文条件，核验和 JSON 稳定性未达上线标准。
+最新实测见 [QUALITY_ITERATION_34.md](QUALITY_ITERATION_34.md)：新增默认关闭的三协议原生Schema请求与本地严格校验。同一模型关闭思考后，原始SpringData简介的完整实网链路约15秒生成单图，事实复核通过但一处引用不完整；复杂资料的语义核验、范围与稳定性仍需改进，不能正式上线。普通兼容模式保持原行为，私有配置未修改。
 
 Go 搜索 Bot：多后端检索 → 读取网页 → 筛选证据 → 带引用总结与核验 → Typst 渲染 PNG → Telegram / QQ 回复。不读取群聊历史。
 
@@ -57,7 +57,9 @@ set +a
 
 `MODEL_API=auto` 根据 URL 尾部 `/responses`、`/messages` 识别协议，否则按 Chat Completions 处理。网关使用自定义路径时显式指定协议。`MODEL_AUTH` 可选 `auto`、`bearer`、`x-api-key`、`api-key`，只发送选定的认证头；例如使用 Bearer 的 Anthropic 网关需设置 `MODEL_AUTH=bearer`。Chat 网关如要求新 token 参数，设置 `MODEL_TOKEN_PARAMETER=max_completion_tokens`。依赖 AWS 签名、Google OAuth 等独立云认证的入口，需要先接兼容网关，当前客户端不自动获取这些凭据。
 
-`MODEL_JSON_MODE=true` 在 Chat 使用 `response_format`，在 Responses 使用 `text.format`；不支持 JSON 模式的网关可关闭该选项。Anthropic 不发送这些 OpenAI 字段，依靠统一的 JSON 提示词与本地格式、引用校验。三种协议均拒绝空回答、截断、拒答及工具调用；Responses 从所有消息文本块提取正文，Anthropic 跳过思考块，不把思考过程当答案。
+`MODEL_JSON_MODE=true` 在 Chat 使用 `response_format`，在 Responses 使用 `text.format`；不支持 JSON 模式的网关可关闭该选项。Anthropic 默认不发送这些 OpenAI 字段，依靠统一的 JSON 提示词与本地格式、引用校验。三种协议均拒绝空回答、截断、拒答及工具调用；Responses 从所有消息文本块提取正文，Anthropic 跳过思考块，不把思考过程当答案。
+
+支持原生 JSON Schema 的模型/端点可显式设置 `MODEL_STRUCTURED_OUTPUT=true`，默认关闭。Chat 使用 `response_format.json_schema`，Responses 使用 `text.format`，Anthropic 使用 `output_config.format`，保留其 effort 配置；该选项优先于 `MODEL_JSON_MODE` 的旧 `json_object` 模式。Schema 从内部类型生成，最多缓存16种，单个序列化Schema最多16KiB、构建深度8、节点128；只支持有类型的对象、基本字段、切片与可空指针，不接收任意 map、定长数组、二进制切片、嵌入字段、自定义 JSON 解码或递归类型。必需字段、未知字段和空值在本地再次校验；网关忽略参数或返回400时会报错，不自动换协议、降级或放行草稿。格式符合 Schema 仍不表示事实正确，开启前须用实际问题测试。
 
 思考控制默认 `MODEL_THINKING=auto`：未知服务不发送厂商专用思考字段，官方 `api.deepseek.com` 的 Chat 请求在未设置 effort 时显式关闭思考，节省本项目有限的时间与输出额度。在该端点显式设置非 `none` 的 `MODEL_REASONING_EFFORT` 会启用思考；`none` 转换成关闭思考，不作为不支持的 effort 值发送。显式关闭思考与非零 effort 冲突时在发请求前报错。可显式设置 `enabled` / `disabled`；`adaptive` 仅供支持该模式的 Anthropic 模型。官方 OpenAI Chat 使用 `MODEL_REASONING_EFFORT` 控制推理；Responses 使用其原生 `reasoning.effort`；Anthropic 使用 `thinking` 和可选 `output_config.effort`。`MODEL_THINKING_BUDGET` 仅用于 Anthropic 的 enabled 模式，默认 1024，须小于 `MODEL_MAX_TOKENS`。参数是否可用、effort 的取值范围取决于具体模型；不支持时应去掉配置，不会自动改协议或降级掩盖错误。
 

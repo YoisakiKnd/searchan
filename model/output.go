@@ -79,12 +79,15 @@ func decodeOutput(content string, out any) (result error) {
 	}
 	var mismatch *json.UnmarshalTypeError
 	if errors.As(err, &mismatch) {
-		field := ""
-		switch mismatch.Field {
-		case "answers_query", "title", "lead", "lead.text", "lead.evidence_ids", "sections", "sections.heading", "sections.claims", "sections.claims.text", "sections.claims.evidence_ids", "uncertainties", "missing", "table", "table.columns", "table.rows", "table.rows.cells", "table.rows.evidence_ids":
-			field = mismatch.Field
-		}
-		return &OutputError{kind: "type", field: field, offset: mismatch.Offset}
+		return &OutputError{kind: "type", field: allowedOutputField(mismatch.Field), offset: mismatch.Offset}
 	}
 	return &OutputError{kind: "schema"}
+}
+
+func allowedOutputField(field string) string {
+	switch field {
+	case "answers_query", "title", "lead", "lead.text", "lead.evidence_ids", "sections", "sections.heading", "sections.claims", "sections.claims.text", "sections.claims.evidence_ids", "uncertainties", "missing", "table", "table.columns", "table.rows", "table.rows.cells", "table.rows.evidence_ids", "intent", "queries", "aspects", "requires_fresh", "read_ids", "unsupported", "ok", "summary":
+		return field
+	}
+	return ""
 }

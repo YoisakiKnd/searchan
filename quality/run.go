@@ -190,7 +190,7 @@ func Run(ctx context.Context, opt Options, env func(string) string, progress io.
 	}
 	// Never persist the entire environment. Endpoint hashes identify endpoint
 	// changes without writing credentials embedded in a trusted endpoint URL.
-	for _, k := range []string{"MODEL_NAME", "MODEL_API", "MODEL_AUTH", "MODEL_MAX_TOKENS", "MODEL_JSON_MODE", "MODEL_TOKEN_PARAMETER", "MODEL_THINKING", "MODEL_THINKING_BUDGET", "MODEL_REASONING_EFFORT", "MODEL_RETRIES", "MODEL_ANTHROPIC_VERSION", "SEARXNG_ENGINES", "JINA_READER_ENABLED"} {
+	for _, k := range []string{"MODEL_NAME", "MODEL_API", "MODEL_AUTH", "MODEL_MAX_TOKENS", "MODEL_JSON_MODE", "MODEL_STRUCTURED_OUTPUT", "MODEL_TOKEN_PARAMETER", "MODEL_THINKING", "MODEL_THINKING_BUDGET", "MODEL_REASONING_EFFORT", "MODEL_RETRIES", "MODEL_ANTHROPIC_VERSION", "SEARXNG_ENGINES", "JINA_READER_ENABLED"} {
 		report.Settings[k] = env(k)
 	}
 	for _, k := range []string{"MODEL_ENDPOINT", "DDG_ENDPOINT", "BRAVE_ENDPOINT", "TAVILY_ENDPOINT", "EXA_ENDPOINT", "SEARXNG_ENDPOINT", "JINA_ENDPOINT", "JINA_READER_ENDPOINT"} {

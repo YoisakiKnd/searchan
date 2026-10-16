@@ -74,6 +74,8 @@ searchan-admin 通过 systemd 临时单元，以服务账号和相同环境执�
 
 模型支持 OpenAI Chat Completions / Responses、Anthropic Messages 及兼容网关；协议识别、认证和思考配置见 [README 模型说明](README.md)。必须填写完整 URL。自定义路径需要显式设置 `MODEL_API`，使用 Bearer 认证的 Anthropic 网关另设 `MODEL_AUTH=bearer`。新参数需升级到包含该功能的版本，旧安装包不会自动获得代码更新。
 
+可选原生结构模式默认关闭，仅支持该能力的端点启用 `MODEL_STRUCTURED_OUTPUT=true`；配置方法见 README。当前 DeepSeek 模型的本地探测使用同一域名 `/responses`、`MODEL_API=responses`、`MODEL_THINKING=disabled`、`MODEL_REASONING_EFFORT=none`、`MODEL_TOKEN_PARAMETER=auto`。这不是自动修改现有服务器配置的迁移；官方 Chat 路径不能据此假定支持 `json_schema`。先跑实际 quality 题目：简单 model check 通过不能证明复杂报告稳定，Schema 参数被接受也不能代替本地校验和事实审阅。
+
 若小请求成功、实际总结报连接重置，先用服务的相同账号、环境和较大输入检查模型通路：
 
 ```sh
