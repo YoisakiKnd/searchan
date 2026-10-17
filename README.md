@@ -126,6 +126,8 @@ RRF 和多次命中不代表事实正确或来源独立。模型核验是辅助�
 
 SearXNG 的 `settings.yml` 需允许 `search.formats: [html, json]`。可设 `SEARXNG_ENGINES=duckduckgo,bing`，Bing 经自建实例调用。本项目未实现独立 Bing API。DDG 在开发网络的真实检索曾超时，部署后需要测可达性与成功率。
 
+同一运行实例共享的 DDG 适配器最多一个在途请求，排队计入调用超时；明确挑战或 HTTP 403 / 429 后至少冷却一分钟，更长的有效 `Retry-After` 会延长冷却。冷却内直接返回原错误类别，不继续请求或延长截止时间，其他已启用后端仍可检索。独立实例不共享状态；这不能绕过挑战，也不保证 DDG 可用，仅启用 DDG 时仍可能搜索失败。
+
 `JINA_READER_ENABLED=true` 单独启用 `r.jina.ai` 正文读取，需要 `JINA_API_KEY`。Search 和 Reader 是不同调用，限额 / 费用以供应商账户为准。
 
 Go 库入口：`search.NewProvider(name, config)`、`NewDDG`、`NewBrave` 等；`search.SearchAll(ctx, providers, request)` 并行聚合并保留部分成功结果。可注入 HTTP Client 测试。Endpoint / Client 属于可信运维配置，不接收聊天用户指定的代理或内部地址。

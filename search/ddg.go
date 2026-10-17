@@ -3,10 +3,14 @@ package search
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
@@ -14,17 +18,22 @@ import (
 
 // DDG parses DuckDuckGo HTML directly; it does not call SearXNG or Instant Answers.
 // HTML is not a stable public API. Challenges and layout changes return errors.
-type DDG struct{ *base }
+type DDG struct {
+	*base
+	lane       chan struct{}
+	coolUntil  time.Time
+	coolStatus int // zero denotes a parsed anti-bot challenge
+}
 
 func NewDDG(cfg Config) (*DDG, error) {
 	b, err := newBase("ddg", "https://html.duckduckgo.com/html/", cfg, false)
 	if err != nil {
 		return nil, err
 	}
-	return &DDG{b}, nil
+	return &DDG{base: b, lane: make(chan struct{}, 1)}, nil
 }
 
-func (p *DDG) Search(ctx context.Context, req Request) (Response, error) {
+func (p *DDG) Search(ctx context.Context, req Request) (_ Response, err error) {
 	req, resp, err := prepare(req, p.Name(), 30, false)
 	if err != nil {
 		return resp, err
@@ -32,6 +41,43 @@ func (p *DDG) Search(ctx context.Context, req Request) (Response, error) {
 	if utf8.RuneCountInString(req.Query) > 499 {
 		return resp, fmt.Errorf("ddg: query exceeds 499 characters")
 	}
+	if deadline, bounded := ctx.Deadline(); !bounded || time.Until(deadline) > p.client.Timeout {
+		var stop context.CancelFunc
+		ctx, stop = context.WithTimeout(ctx, p.client.Timeout)
+		defer stop()
+	}
+	if err := ctx.Err(); err != nil {
+		return resp, err
+	}
+	// Runtime tasks share this adapter. One in-flight request and one scalar
+	// cooldown prevent concurrent chats from immediately repeating a challenge.
+	select {
+	case p.lane <- struct{}{}:
+	case <-ctx.Done():
+		return resp, ctx.Err()
+	}
+	attempted := false
+	defer func() {
+		if attempted {
+			p.rememberDDGFailure(err)
+		}
+		<-p.lane
+	}()
+	if err := ctx.Err(); err != nil {
+		return resp, err
+	}
+	if now := time.Now(); now.Before(p.coolUntil) {
+		if p.coolStatus == 0 {
+			return resp, fmt.Errorf("ddg: %w", ErrBlocked)
+		}
+		remaining := p.coolUntil.Sub(now)
+		seconds := remaining / time.Second
+		if remaining%time.Second != 0 {
+			seconds++
+		}
+		return resp, &HTTPError{Provider: p.Name(), StatusCode: p.coolStatus, RetryAfter: strconv.FormatInt(int64(seconds), 10)}
+	}
+	attempted = true
 	data, err := p.do(ctx, "POST", p.endpoint, []byte(url.Values{"q": {req.Query}}.Encode()), map[string]string{"Content-Type": "application/x-www-form-urlencoded", "Accept": "text/html"})
 	if err != nil {
 		return resp, err
@@ -47,6 +93,32 @@ func (p *DDG) Search(ctx context.Context, req Request) (Response, error) {
 		resp.Warnings = append(resp.Warnings, "DDG adapter reads the first HTML page only; requested result count is not guaranteed")
 	}
 	return resp, nil
+}
+
+// Only explicit blocking and refusal statuses open the circuit. Transport,
+// cancellation and unknown layouts do not poison later tasks. The lane owns
+// these fields; local cooldown rejections never extend the original deadline.
+func (p *DDG) rememberDDGFailure(err error) {
+	var status *HTTPError
+	if !errors.Is(err, ErrBlocked) && (!errors.As(err, &status) || (status.StatusCode != 403 && status.StatusCode != 429)) {
+		return
+	}
+	now := time.Now()
+	until := now.Add(time.Minute)
+	code := 0
+	if status != nil {
+		code = status.StatusCode
+		if seconds, e := strconv.ParseInt(strings.TrimSpace(status.RetryAfter), 10, 64); e == nil && seconds > 60 {
+			if seconds > int64((time.Duration(1<<63-1))/time.Second) {
+				until = time.Date(9999, 12, 31, 23, 59, 59, 0, time.UTC)
+			} else {
+				until = now.Add(time.Duration(seconds) * time.Second)
+			}
+		} else if date, e := http.ParseTime(status.RetryAfter); e == nil && date.After(until) {
+			until = date
+		}
+	}
+	p.coolUntil, p.coolStatus = until, code
 }
 
 // parseDDG tokenizes with a bounded stack instead of retaining an HTML DOM.

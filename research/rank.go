@@ -166,6 +166,7 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 	overviews := overviewTargets(plan)
 	intro := len(plan.Queries) > 0 && introductoryQuery(plan.Queries[0])
 	l := newLexical(query, plan.Aspects, plan.Queries)
+	l.expandProseForms(query, plan.Aspects, plan.Queries)
 	scratch := make([]uint16, len(l.terms))
 	items := make([]scoredEvidence, 0, len(docs)*16)
 	vectors := make([]lexicalVector, 0, len(docs)*16)

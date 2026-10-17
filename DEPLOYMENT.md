@@ -36,6 +36,7 @@ bash scripts/package-linux.sh 0.1.0-rc.1
 - `SEARCHAN_ALLOWED_USERS=telegram:你的数字用户ID` 或 `SEARCHAN_ALLOWED_CHATS=telegram:群ID`，用户与会话按“或”授权；默认不公开服务。
 - `MODEL_ENDPOINT`、`MODEL_NAME`、所需 `MODEL_API_KEY`，保留 `SEARCHAN_MODEL_VERIFY=true`。
 - `SEARCHAN_PROVIDERS` 及对应凭据，仅启用实际使用的后端。DDG 无密钥，但需要验证部署网络的可达性及挑战页发生率。
+- 同一实例的 DDG 请求串行执行，排队计入搜索超时；明确挑战、403 或 429 后共享至少一分钟冷却，并遵守更长的有效 `Retry-After`。期间快速返回同类错误，其他已启用后端继续工作；不同进程不共享冷却。仅配置 DDG 无法保证可用性，部署时应验收实际后端组合。
 
 保留 `SEARCHAN_LISTEN=127.0.0.1:8090` 和 `TYPST_BIN=typst`，由服务 PATH 使用当前版本的 Typst；QQ_APP_ID 留空。SEARCHAN_DOMAIN 仅用于可选 Compose，原生 Caddy 示例直接填写域名。环境文件使用 `NAME=value`，不写 export、变量插值或 shell 命令。安装器不会 source 或打印该文件。
 

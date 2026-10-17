@@ -5,10 +5,42 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"searchan/search"
 )
+
+func TestDDGSharedCooldownLeavesHealthyProviderAvailableAcrossTasks(t *testing.T) {
+	var upstream atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstream.Add(1)
+		fmt.Fprint(w, `<form id="challenge-form">blocked</form>`)
+	}))
+	defer srv.Close()
+	ddg, err := search.NewDDG(search.Config{Endpoint: srv.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	good, reader := fixtures()
+	e, err := New(Config{Providers: append([]search.Provider{ddg}, good...), Reader: reader, Model: fixtureModel(), SearchConcurrency: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for task := range 2 {
+		stats := Stats{}
+		r := newRetrieval(e, &stats)
+		r.search(context.Background(), []string{fmt.Sprintf("chat %d", task)}, 2)
+		if !r.paused[0] || r.paused[1] || len(r.hits) == 0 || stats.SearchCalls != 2 {
+			t.Fatalf("task %d lost healthy results: paused=%v hits=%d calls=%d", task, r.paused, len(r.hits), stats.SearchCalls)
+		}
+	}
+	if upstream.Load() != 1 {
+		t.Fatal("second task repeated a known challenge upstream", upstream.Load())
+	}
+}
 
 func TestConsecutiveProviderOutagesPauseAcrossRecovery(t *testing.T) {
 	for _, outage := range []error{context.DeadlineExceeded, &net.DNSError{IsTimeout: true}, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("unreachable")}, &search.HTTPError{StatusCode: 503}} {
