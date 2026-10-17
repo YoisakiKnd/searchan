@@ -2,7 +2,7 @@
 
 2026-10-12，macOS arm64，Go 1.27.2，Typst 0.15.1，govulncheck 1.8.0。状态：用户已开始 Linux 部署联调，完整生产验收尚未完成。
 
-最新本地状态（2026-10-17）：原生二进制和实际Typst的十二任务假接口验收通过，重复Webhook不重复工作，发送中崩溃的两条不自动重发，排队任务继续完成。完整本地工程检查通过；Linux CI新增实际已安装服务的同场景、cgroup配额/内存峰值/零OOM及一次自动重启检查，数值以本提交Actions产物为准。引用分组候选仍漏检，未采用，质量问题尚未解决。详见 [QUALITY_ITERATION_40.md](QUALITY_ITERATION_40.md)。此前ce3d6e7的[Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/38995416222)通过安装、升级/回滚和双架构打包；本轮远端结果按精确提交另核对。正式质量与用户目标环境门槛未完成；以下为历史记录。
+最新本地状态（2026-10-17）：明确发布日期问题复用原补读额度取得已有发布历史，并保留原文明确日期行，普通问题与显式数字版本范围不扩展日期优先权。十组保存资料回归仅Go日期题改变；新实网该题约12.7秒单图，版本/日期及引用全文复核2/2，首次JSON失败仍保留。最终完整本地工程检查通过。详见 [QUALITY_ITERATION_41.md](QUALITY_ITERATION_41.md)。此前b65f424的[Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/38996691586)通过原生服务负载、崩溃恢复及打包，受控峰值59.84MiB、零OOM；本轮远端数据按新提交另核对。引用/范围及完整质量、用户目标环境门槛未完成；以下为历史记录。
 
 RC.6 发布准备：包含自适应取证、本地 quality 测试、简单简介写作范围、正文边界及安全 JSON 诊断。本地完整检查通过，新增错误隐私/不重试用例另通过 model/quality race。四份原 HTML 边界检查通过，但第三轮真实模型五次尝试只有两次完成、三次失败，准确性与稳定性仍未通过；详见 [QUALITY_ITERATION_03.md](QUALITY_ITERATION_03.md) 与 [CHANGELOG.md](CHANGELOG.md)。Linux 包补齐公开题集及效果测试说明；私有配置、HTML/正文快照和 PNG 均不发布。远端构建状态以 Actions 为准。
 

@@ -143,6 +143,7 @@ type scoredEvidence struct {
 	sketch       sketch
 	domain       string
 	opening      bool
+	publication  bool
 	headingScore float64
 }
 
@@ -171,6 +172,12 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 	hashes := map[string]bool{}
 	urls := map[string]bool{}
 	entities := relevanceEntities(plan)
+	var publicationSubjects []string
+	if len(plan.Queries) > 0 && plan.Intent != "compare" && needsFresh(plan) && requiresFreshQuery(plan.Queries[0]) && !strings.ContainsAny(plan.Queries[0], "0123456789") && releaseDateQuery(plan.Queries[0]) {
+		publicationSubjects = releaseSubjects(plan)
+	}
+	latestReleaseDay := 0
+	var publicationIndices []int
 	var entityHeadingTerms map[string]bool
 	if !intro && plan.Intent != "compare" && len(plan.Queries) > 0 && len(entities) > 0 && identifierTopicQuery(plan.Queries[0]) {
 		entityHeadingTerms = make(map[string]bool)
@@ -197,6 +204,7 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 			titleBoost += l.terms[f.term].weight * .12
 		}
 		docFocused := matchesEntities(doc.Title+" "+doc.URL, entities)
+		publicationPage := len(publicationSubjects) > 0 && releaseTitleKind(reader.Clip(doc.Title, 200), publicationSubjects) > 0
 		for pi, p := range documentPassages(doc) {
 			if !docFocused && !matchesEntities(p.text, entities) {
 				continue
@@ -222,6 +230,15 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 					opening = opening || overviewFit(overview, doc.URL, doc.Title) > 0 && mentionsEntity(p.text, overview)
 				}
 			}
+			if publicationPage {
+				if day := explicitReleaseDay(p.text, doc.FetchedAt); day > 0 && day >= latestReleaseDay {
+					if day > latestReleaseDay {
+						latestReleaseDay = day
+						publicationIndices = publicationIndices[:0]
+					}
+					publicationIndices = append(publicationIndices, len(items))
+				}
+			}
 			items = append(items, scoredEvidence{evidence: Evidence{URL: doc.URL, Title: doc.Title, Text: p.text, DocumentHash: doc.Hash, Paragraph: p.first, ParagraphEnd: p.last, Kind: "body", PublishedAt: published[doc.URL], FetchedAt: doc.FetchedAt, ReadMethod: reader.Clip(doc.Method, 64), Truncated: doc.Truncated}, vector: v, score: titleBoost, domain: domain(doc.URL), opening: opening, headingScore: headingScore})
 			vectors = append(vectors, v)
 		}
@@ -235,6 +252,22 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 		items[i].score += scores[i]
 		bestBody = math.Max(bestBody, scores[i])
 		bestHeading = math.Max(bestHeading, items[i].headingScore)
+	}
+	publicationScale := bestBody
+	if len(publicationIndices) > 0 && publicationScale == 0 {
+		// A release table may name the project only in its page title. Keep
+		// explicit dated rows even when their version identifiers have no
+		// literal query words. This fallback is not used for ordinary queries.
+		for _, item := range items {
+			publicationScale = math.Max(publicationScale, item.score)
+		}
+	}
+	for _, i := range publicationIndices {
+		// Preserve an explicit recent release row against keyword-heavy
+		// policy/overview text, including its heading bonus. This ranks
+		// source text; it does not certify a release or infer a date.
+		items[i].publication = true
+		items[i].score += 1.8 * publicationScale
 	}
 	// Definition/overview questions need the opening in context. Repeated entity
 	// names in references and footers must not consume all per-page slots. Scale
@@ -261,7 +294,7 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 	if bestBody > 0 {
 		filtered := items[:0]
 		for i, item := range items {
-			if item.opening || scores[i] >= .04*bestBody {
+			if item.opening || item.publication || scores[i] >= .04*bestBody {
 				filtered = append(filtered, item)
 			}
 		}

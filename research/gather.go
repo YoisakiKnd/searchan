@@ -645,17 +645,24 @@ func (g *gathering) readInitial(ctx context.Context, pageLimit int) []string {
 		}
 		original := queryKey(g.out.Plan.Queries[0])
 		canonical := queryKey(spacedQuery(g.out.Plan.Queries[0]))
-		for _, q := range g.out.Plan.Queries[1:min(3, len(g.out.Plan.Queries))] {
-			if queryKey(q) == original || queryKey(q) == canonical {
-				continue
+		// For an explicit publication-date question, the original query can
+		// already lead to a complete history. An expansion's old release notes
+		// must not consume the one opportunity ahead of that existing history.
+		ref, dateHandled := searchReleaseReference(g.out.Plan, g.retrieval.hits, scheduled, g.reading.attempted)
+		if !dateHandled {
+			for _, q := range g.out.Plan.Queries[1:min(3, len(g.out.Plan.Queries))] {
+				if queryKey(q) == original || queryKey(q) == canonical {
+					continue
+				}
+				ref = searchReference(g.out.Plan, queryLeaders(g.retrieval.hits, queryKey(q)), scheduled, g.reading.attempted)
+				if ref.URL != "" {
+					break
+				}
 			}
-			leaders := queryLeaders(g.retrieval.hits, queryKey(q))
-			ref := searchReference(g.out.Plan, leaders, scheduled, g.reading.attempted)
-			if ref.URL != "" {
-				ahead = len(selected)
-				selected = append(selected, ref)
-				break
-			}
+		}
+		if ref.URL != "" {
+			ahead = len(selected)
+			selected = append(selected, ref)
 		}
 	}
 	warnings := g.reading.readSelected(ctx, g.out.Plan, selected)

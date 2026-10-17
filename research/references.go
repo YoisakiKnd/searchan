@@ -126,6 +126,9 @@ func (s *referenceMatcher) score(title, raw string) float64 {
 // searchReference fills the same single discovery-read slot, not a separate
 // stage. It cannot introduce a URL absent from the actual provider results.
 func searchReference(plan Plan, hits []hit, docs []reader.Document, attempted map[string]bool) hit {
+	if release, handled := searchReleaseReference(plan, hits, docs, attempted); handled {
+		return release
+	}
 	if len(plan.Queries) == 0 {
 		return hit{}
 	}
