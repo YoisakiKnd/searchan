@@ -2,6 +2,7 @@ package research
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -37,7 +38,7 @@ func TestBriefLayoutIsRegeneratedOnceFromEvidence(t *testing.T) {
 		})
 		e, _ := New(Config{Providers: ps, Reader: r, Model: lm})
 		out := Output{Evidence: []Evidence{{ID: "e1", Text: "Workers observe cancellation."}}}
-		err := e.briefSummary(context.Background(), &out, map[string]any{"evidence": out.Evidence}, "snippets_only", "Notice")
+		err := e.briefSummary(context.Background(), &out, "snippets_only", "Notice")
 		if err != nil || calls != 2 || out.Stats.ModelCalls != 2 || out.Stats.AnswerRepairs != 1 || out.AnswerMode != "brief_summary" || out.AnswerReason != "snippets_only" || out.Answer.Uncertainties[0] != "Notice" {
 			t.Fatalf("layout did not recover: %+v calls=%d err=%v", out, calls, err)
 		}
@@ -56,9 +57,45 @@ func TestBriefCannotPublishUncitedConditionsAfterOneFreshRepair(t *testing.T) {
 	})
 	e, _ := New(Config{Providers: ps, Reader: r, Model: m})
 	out := Output{Evidence: []Evidence{{ID: "e1", Text: "Atlas signals cancellation."}}}
-	err := e.briefSummary(context.Background(), &out, map[string]any{"evidence": out.Evidence}, "verification_failed", "Notice")
+	err := e.briefSummary(context.Background(), &out, "verification_failed", "Notice")
 	if !errors.Is(err, ErrAnswerValidation) || calls != 2 || out.Stats.AnswerRepairs != 1 || out.Answer.Title != "" || len(out.Sources) != 0 || strings.Contains(err.Error(), "SECRET_UNCITED_CONDITION") {
 		t.Fatalf("uncited brief condition was salvaged or retried indefinitely: output=%+v calls=%d err=%v", out, calls, err)
+	}
+}
+
+func TestBriefInputExcludesPlannerAndVerifierAssertions(t *testing.T) {
+	in := fixedSynthesisInput()
+	in.Plan.Aspects = []string{"SECRET_PLAN_SCOPE"}
+	ps, r := fixtures()
+	calls := 0
+	m := modelFunc(func(_ context.Context, prompt string, input, output any) error {
+		calls++
+		if prompt == verifyPrompt {
+			return assign(output, `{"answers_query":true,"unsupported":["SECRET_VERIFIER_ASSERTION"],"missing":[]}`)
+		}
+		if prompt == briefPrompt {
+			raw, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, value := range []string{"SECRET_PLAN_SCOPE", "SECRET_VERIFIER_ASSERTION", "SECRET_DRAFT", `"aspects"`, `"problems"`, `"previous_answer"`} {
+				if strings.Contains(string(raw), value) {
+					t.Fatal("model-authored scope or assertions reached independent brief input", value)
+				}
+			}
+			fields := input.(map[string]any)
+			if fields["query"] != in.Query || fields["current_date"] != "2026-08-01" || fields["reason"] != "verification_failed" {
+				t.Fatal("original question, reference date or program status was lost", fields)
+			}
+			assertWireEvidence(t, input, in.Evidence)
+			return assign(output, `{"title":"Atlas cancellation","lead":{"text":"Atlas signals cancellation; workers must cooperate to stop early.","evidence_ids":["stable-id"]},"sections":[],"uncertainties":[]}`)
+		}
+		return assign(output, `{"title":"Draft","lead":{"text":"SECRET_DRAFT","evidence_ids":["stable-id"]},"sections":[],"uncertainties":[]}`)
+	})
+	e, _ := New(Config{Providers: ps, Reader: r, Model: m, VerifyWithModel: true})
+	out, err := e.Synthesize(context.Background(), in)
+	if err != nil || calls != 3 || out.AnswerMode != "brief_summary" || strings.Contains(out.Text(), "SECRET_") {
+		t.Fatalf("independent brief did not preserve its input boundary: calls=%d output=%+v error=%v", calls, out, err)
 	}
 }
 
@@ -72,7 +109,7 @@ func TestBriefInvalidCitationsNeverEnterLayoutRepair(t *testing.T) {
 		})
 		e, _ := New(Config{Providers: ps, Reader: r, Model: lm})
 		out := Output{Evidence: []Evidence{{ID: "e1"}}}
-		err := e.briefSummary(context.Background(), &out, map[string]any{}, "snippets_only", "Notice")
+		err := e.briefSummary(context.Background(), &out, "snippets_only", "Notice")
 		if !errors.Is(err, ErrAnswerValidation) || calls != 1 || out.Stats.AnswerRepairs != 0 || out.Answer.Title != "" {
 			t.Fatalf("invalid citations were repaired/published: %+v calls=%d err=%v", out, calls, err)
 		}
@@ -130,7 +167,7 @@ func TestBriefRepairUsesRemainingOriginalBudget(t *testing.T) {
 			case "canceled":
 				cancel()
 			}
-			err := e.briefSummary(ctx, &out, map[string]any{}, "snippets_only", "Notice")
+			err := e.briefSummary(ctx, &out, "snippets_only", "Notice")
 			if name == "shared-stage" {
 				if err != nil || len(deadlines) != 2 || deadlines[1].After(deadlines[0].Add(10*time.Millisecond)) {
 					t.Fatal("repair received a fresh stage budget", deadlines, err)

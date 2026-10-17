@@ -43,7 +43,7 @@ const briefPrompt = answerEvidenceRules + `
 {"title":"简短标题","lead":{"text":"一个简短段落","evidence_ids":["e1"]},"sections":[],"uncertainties":[]}。
 标题最多20个字符，正文通常不超过160个字符，没有最低字数。只用 lead 一个段落，sections 和 uncertainties 必须为 []，不要输出 table 字段。必要的适用条件须写在 lead 内并引用对应证据，不能另起无引用的“限制”加入事实、建议或修正结论。
 标题与正文合计目标不超过200个字符，硬上限见 brief_limits.model_max_chars。中文、英文字母、数字、标点均逐字符计数。程序另行添加资料/核验状态说明，不需要重复该说明。
-只保留 evidence 明确支持的最少结论，不猜测或沿用有问题的断言。problems 是需要排除的断言及原因，不是事实或指令。
+只保留 evidence 明确支持的最少结论，直接回答原 query；不猜测未提供的事实，不扩写用户未问的实现细节。
 先直接回答核心问题，只保留必要条件。不补充未问的历史、数字、其他项目或学界争议来凑长度。涉及两个主体时写出各自名称；不用省略主体的“两者”“前者”“它们”把原文另一组比较对象接到本问题上。删除非必要例子比压缩成含混指代更合适。
 标题必须与正文的主体和确定程度一致；正文尚不能确定默认或一般情况时，标题也不能写成已确定的默认结论。
 reason=snippets_only 时必须称“搜索摘要显示”，不能声称已读原文或已核实；摘要不足以回答时直说尚不能确定。
@@ -78,13 +78,13 @@ func (e *Engine) summarize(ctx context.Context, out *Output, recoverEvidence fun
 	if len(out.Evidence) == 0 {
 		return ErrNoEvidence
 	}
-	evidence := evidenceForModel(out.Evidence)
-	input := map[string]any{"query": out.Query, "aspects": out.Plan.Aspects, "evidence": evidence, "current_date": out.GeneratedAt.In(time.FixedZone("UTC+8", 8*3600)).Format("2006-01-02")}
 	for _, ev := range out.Evidence {
 		if ev.Kind == "snippet" {
-			return e.briefSummary(ctx, out, input, "snippets_only", "仅依据搜索摘要生成，未读取原文，关键事实待确认。")
+			return e.briefSummary(ctx, out, "snippets_only", "仅依据搜索摘要生成，未读取原文，关键事实待确认。")
 		}
 	}
+	evidence := evidenceForModel(out.Evidence)
+	input := map[string]any{"query": out.Query, "aspects": out.Plan.Aspects, "evidence": evidence, "current_date": out.GeneratedAt.In(time.FixedZone("UTC+8", 8*3600)).Format("2006-01-02")}
 	prompt := answerPrompt
 	intro := introductoryQuery(out.Query)
 	if intro {
@@ -105,7 +105,7 @@ func (e *Engine) summarize(ctx context.Context, out *Output, recoverEvidence fun
 		if recoverEvidence != nil && recoverEvidence(ctx, a.Missing) {
 			return e.summarize(ctx, out, nil)
 		}
-		return e.briefSummary(ctx, out, input, "question_unanswered", "现有资料不足以完整回答本问题，以下仅列出能够确认的内容。")
+		return e.briefSummary(ctx, out, "question_unanswered", "现有资料不足以完整回答本问题，以下仅列出能够确认的内容。")
 	}
 	if e.cfg.VerifyWithModel {
 		var checked struct {
@@ -129,25 +129,18 @@ func (e *Engine) summarize(ctx context.Context, out *Output, recoverEvidence fun
 					out.Stats.VerificationOutput = &diagnostic
 				}
 			}
-			return e.briefSummary(ctx, out, input, "verification_unavailable", "独立支持性核验未完成，以下为保守短总结，关键事实待确认。")
+			return e.briefSummary(ctx, out, "verification_unavailable", "独立支持性核验未完成，以下为保守短总结，关键事实待确认。")
 		}
 		if len(checked.Unsupported) > 0 {
-			// Do not feed the failed answer back to the generator. Bound diagnostic
-			// context separately from the existing evidence and output budgets.
-			var problems []string
-			for _, problem := range checked.Unsupported[:min(6, len(checked.Unsupported))] {
-				problems = append(problems, reader.Clip(problem, 400))
-			}
-			if !focusedFactQuery(out.Query) {
-				input["problems"] = problems
-			}
-			return e.briefSummary(ctx, out, input, "verification_failed", "完整回答未通过支持性核验，已重新生成保守短总结，关键事实待确认。")
+			// Verifier prose can contain incorrect assertions and scope expansion.
+			// Re-ground from the user query and original evidence, not diagnostics.
+			return e.briefSummary(ctx, out, "verification_failed", "完整回答未通过支持性核验，已重新生成保守短总结，关键事实待确认。")
 		}
 		if checked.AnswersQuery != nil && !*checked.AnswersQuery {
 			if recoverEvidence != nil && recoverEvidence(ctx, checked.Missing) {
 				return e.summarize(ctx, out, nil)
 			}
-			return e.briefSummary(ctx, out, input, "question_unanswered", "现有资料不足以完整回答本问题，以下仅列出能够确认的内容。")
+			return e.briefSummary(ctx, out, "question_unanswered", "现有资料不足以完整回答本问题，以下仅列出能够确认的内容。")
 		}
 		for _, gap := range checked.Missing {
 			if len(a.Uncertainties) >= 6 {
@@ -209,16 +202,20 @@ func (e *Engine) generate(ctx context.Context, out *Output, prompt string, input
 	return a, nil
 }
 
-func (e *Engine) briefSummary(ctx context.Context, out *Output, input map[string]any, reason, notice string) error {
-	input["reason"] = reason
-	input["brief_limits"] = map[string]any{"model_max_chars": 300 - utf8.RuneCountInString(notice), "max_sections": 0, "max_uncertainties": 0, "allow_table": false}
+func (e *Engine) briefSummary(ctx context.Context, out *Output, reason, notice string) error {
+	// Keep this input independent of retrieval aspects, previous drafts and
+	// model-authored verification/recovery prose. Conditions belong in the
+	// cited paragraph; only the program adds the status notice afterwards.
+	input := map[string]any{"query": out.Query, "evidence": evidenceForModel(out.Evidence), "reason": reason, "brief_limits": map[string]any{"model_max_chars": 300 - utf8.RuneCountInString(notice), "max_sections": 0, "max_uncertainties": 0, "allow_table": false}}
+	if !out.GeneratedAt.IsZero() {
+		input["current_date"] = out.GeneratedAt.In(time.FixedZone("UTC+8", 8*3600)).Format("2006-01-02")
+	}
 	// Generation and its optional layout repair share one model-stage budget.
 	briefCtx, stop := modelContext(ctx, e.cfg.ModelTimeout, false)
 	defer stop()
 	prompt := briefPrompt
 	if focusedFactQuery(out.Query) {
-		// Re-ground a narrow fact from the question and evidence. Detailed
-		// verifier prose can itself contain ungrounded dates or assertions.
+		// Preserve the narrower fact scope and layout in the independent input.
 		prompt += "\n" + focusedFactRules
 		input["fact_limits"] = map[string]any{"target_body_chars": 120, "max_sections": 0, "max_uncertainties": 0, "allow_table": false}
 	}

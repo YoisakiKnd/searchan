@@ -27,7 +27,10 @@ func newReading(e *Engine, stats *Stats) *reading {
 	return &reading{engine: e, stats: stats, attempted: map[string]bool{}, hashes: map[string]bool{}, urls: map[string]bool{}, published: map[string]string{}}
 }
 func (s *reading) read(ctx context.Context, plan Plan, hits []hit, budget int) []string {
-	selected := rankHits(plan, hits, s.attempted, budget)
+	return s.readSelected(ctx, plan, rankHits(plan, hits, s.attempted, budget))
+}
+
+func (s *reading) readSelected(ctx context.Context, plan Plan, selected []hit) []string {
 	type outcome struct {
 		doc              reader.Document
 		err              error
@@ -56,18 +59,18 @@ func (s *reading) read(ctx context.Context, plan Plan, hits []hit, budget int) [
 				traces[i].ProviderRejected = readIssue(err)
 			}
 		}
+		queued := time.Now()
+		select {
+		case s.engine.readSlots <- struct{}{}:
+		case <-ctx.Done():
+			results[i].err = ctx.Err()
+			continue
+		}
 		wg.Add(1)
-		go func(i int, h hit) {
+		go func(i int, h hit, queued time.Time) {
 			defer wg.Done()
-			started := time.Now()
-			defer func() { traces[i].ElapsedMS = time.Since(started).Milliseconds() }()
-			select {
-			case s.engine.readSlots <- struct{}{}:
-				defer func() { <-s.engine.readSlots }()
-			case <-ctx.Done():
-				results[i].err = ctx.Err()
-				return
-			}
+			defer func() { <-s.engine.readSlots }()
+			defer func() { traces[i].ElapsedMS = time.Since(queued).Milliseconds() }()
 			if ctx.Err() != nil {
 				results[i].err = ctx.Err()
 				return
@@ -100,7 +103,7 @@ func (s *reading) read(ctx context.Context, plan Plan, hits []hit, budget int) [
 					results[i].err = reader.CheckContent(results[i].doc.Title, results[i].doc.Text)
 				}
 			}
-		}(i, h)
+		}(i, h, queued)
 	}
 	wg.Wait()
 	var warnings []string
@@ -250,7 +253,7 @@ func (g *gathering) gather(ctx context.Context) []hit {
 	}
 	for out.Stats.PagesRead < initialPages && gatherCtx.Err() == nil {
 		before := out.Stats.PagesRead
-		out.Warnings = append(out.Warnings, r.read(gatherCtx, out.Plan, s.hits, min(3, initialPages-before))...)
+		out.Warnings = append(out.Warnings, g.readInitial(gatherCtx, initialPages)...)
 		out.Evidence = SelectEvidenceForPlan(out.Plan, r.docs, r.published, e.cfg.MaxEvidence)
 		if len(out.Evidence) > 0 || out.Stats.PagesRead == before {
 			break
@@ -623,4 +626,48 @@ func sourceNames(sources []search.Source) []string {
 		}
 	}
 	return out
+}
+
+// Read the original ranked batch and at most one planned reference together.
+// All original pages start before the reference, using the shared read slots.
+// Keep a page in reserve so an unusable ahead-read cannot block a body reference.
+func (g *gathering) readInitial(ctx context.Context, pageLimit int) []string {
+	remaining := pageLimit - g.out.Stats.PagesRead
+	if remaining <= 0 || ctx.Err() != nil {
+		return nil
+	}
+	selected := rankHits(g.out.Plan, g.retrieval.hits, g.reading.attempted, min(3, remaining))
+	ahead := -1
+	if g.engine.cfg.PlanWithModel && g.engine.cfg.ReadConcurrency > 1 && len(g.out.Plan.Queries) > 0 && !g.referencesChecked && g.out.Stats.ReadingBatches == 0 && g.out.Plan.Intent != "compare" && !introductoryQuery(g.out.Query) && len(selected) >= 2 && len(selected)+2 <= remaining {
+		var scheduled []reader.Document
+		for _, h := range selected {
+			scheduled = append(scheduled, reader.Document{URL: h.URL, Title: h.Title})
+		}
+		original := queryKey(g.out.Plan.Queries[0])
+		canonical := queryKey(spacedQuery(g.out.Plan.Queries[0]))
+		for _, q := range g.out.Plan.Queries[1:min(3, len(g.out.Plan.Queries))] {
+			if queryKey(q) == original || queryKey(q) == canonical {
+				continue
+			}
+			leaders := queryLeaders(g.retrieval.hits, queryKey(q))
+			ref := searchReference(g.out.Plan, leaders, scheduled, g.reading.attempted)
+			if ref.URL != "" {
+				ahead = len(selected)
+				selected = append(selected, ref)
+				break
+			}
+		}
+	}
+	warnings := g.reading.readSelected(ctx, g.out.Plan, selected)
+	if ahead >= 0 && g.reading.attempted[search.DocumentURL(selected[ahead].URL)] {
+		g.out.Stats.DiscoveryReads++
+		key := search.DocumentURL(selected[ahead].URL)
+		for _, trace := range g.out.Stats.PageReads {
+			if trace.URL == key && (trace.State == "accepted" || trace.State == "duplicate") {
+				g.referencesChecked = true
+				break
+			}
+		}
+	}
+	return warnings
 }
