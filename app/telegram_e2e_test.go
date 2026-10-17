@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,8 @@ import (
 	"searchan/platform"
 	"searchan/render"
 	"searchan/research"
+	"searchan/search"
+	"searchan/task"
 )
 
 type pausedRenderer struct {
@@ -45,22 +48,25 @@ func TestTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T) {
 	}{
 		{"full-summary", "/search@searchan_test_bot Go context cancellation", "Go context cancellation", false, nil},
 		{"brief-summary", "/search@searchan_test_bot Go context cancellation", "Go context cancellation", true, nil},
+		{"verified-gap", "/search@searchan_test_bot Go context cancellation", "Go context cancellation", false, nil},
 		{"leading-mention-topic", "@searchan_test_bot Go context cancellation", "Go context cancellation", false, nil},
 		{"adjacent-chinese-mention", "@searchan_test_bot介绍 Go context cancellation", "介绍 Go context cancellation", false, []map[string]any{{"type": "mention", "offset": 0, "length": len("@searchan_test_bot")}}},
 		{"adjacent-slash-command", "@searchan_test_bot/search Go context cancellation", "Go context cancellation", false, []map[string]any{{"type": "mention", "offset": 0, "length": len("@searchan_test_bot")}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			testTelegramWebhookRealPNGAndGracefulShutdown(t, tc.text, tc.query, tc.snippetOnly, tc.entities)
+			testTelegramWebhookRealPNGAndGracefulShutdown(t, tc.text, tc.query, tc.snippetOnly, tc.entities, tc.name == "verified-gap")
 		})
 	}
 }
 
-func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, text, query string, snippetOnly bool, entities []map[string]any) {
+func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, text, query string, snippetOnly bool, entities []map[string]any, verifiedGap bool) {
 	binary := os.Getenv("SEARCHAN_TEST_TYPST")
 	if binary == "" {
 		t.Skip("set SEARCHAN_TEST_TYPST for actual Typst end-to-end test")
 	}
 	var images, texts atomic.Int32
+	var uploaded []byte
+	var caption string
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case strings.HasSuffix(req.URL.Path, "/sendMessage"):
@@ -85,6 +91,18 @@ func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, text, query str
 			if _, err := io.ReadFull(f, header[:]); err != nil || !bytes.Equal(header[:], []byte("\x89PNG\r\n\x1a\n")) {
 				t.Error("not an actual PNG")
 			}
+			if verifiedGap {
+				rest, err := io.ReadAll(io.LimitReader(f, (10<<20)+1))
+				if err != nil || len(rest) > 10<<20 {
+					t.Error("invalid bounded upload")
+					return
+				}
+				uploaded = append(append([]byte(nil), header[:]...), rest...)
+				caption = req.FormValue("caption")
+				if strings.Contains(caption, "SECRET_UNVERIFIED") || !strings.Contains(caption, "部分补充细节尚未确认。") {
+					t.Error("caption published verifier prose or lost program status")
+				}
+			}
 			images.Add(1)
 		default:
 			t.Errorf("unexpected Bot API call: %s", req.URL.Path)
@@ -94,6 +112,18 @@ func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, text, query str
 	defer api.Close()
 	p := &testProvider{snippetOnly: snippetOnly}
 	s, _ := setup(t, p, &testSender{}, testRenderer{})
+	if verifiedGap {
+		e, err := research.New(research.Config{Providers: []search.Provider{p}, Reader: unusedReader{}, MaxSearchCalls: 1, VerifyWithModel: true, Model: testModelFunc(func(ctx context.Context, prompt string, input, output any) error {
+			if strings.HasPrefix(prompt, "核对 answer") {
+				return json.Unmarshal([]byte(`{"answers_query":true,"unsupported":[],"missing":["SECRET_UNVERIFIED_SCOPE: all workers stop immediately"]}`), output)
+			}
+			return (testModel{}).Complete(ctx, prompt, input, output)
+		})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.Runtime.Engine = e
+	}
 	bot := &platform.Telegram{Token: "test-token", WebhookSecret: strings.Repeat("s", 32), Username: "searchan_test_bot", Endpoint: api.URL, Client: api.Client()}
 	s.Runtime.Telegram = bot
 	s.Runtime.Senders["telegram"] = platform.RetrySender{Next: bot}
@@ -167,5 +197,36 @@ func testTelegramWebhookRealPNGAndGracefulShutdown(t *testing.T, text, query str
 	}
 	if snippetOnly && (renderer.output.AnswerMode != "brief_summary" || !strings.Contains(renderer.output.Text(), "未读取原文")) {
 		t.Fatal("brief summary or limitation did not reach the real Typst renderer")
+	}
+	if verifiedGap {
+		files, err := filepath.Glob(filepath.Join(s.Store.Dir, "*", "task.json"))
+		if err != nil || len(files) != 1 {
+			t.Fatal("verified result was not durably stored")
+		}
+		raw, err := os.ReadFile(files[0])
+		var record task.Record
+		if err != nil || json.Unmarshal(raw, &record) != nil || strings.Contains(string(raw), "SECRET_UNVERIFIED") || record.State != "completed" || record.Output == nil || record.Output.Stats.VerificationGaps != 1 || record.Output.Stats.ModelCalls != 2 || len(record.Artifacts) != 1 {
+			t.Fatal("durable result retained unchecked verifier assertions or exceeded model budget")
+		}
+		rendered, err := os.ReadFile(record.Artifacts[0].Path)
+		if err != nil || !bytes.Equal(rendered, uploaded) || strings.Contains(renderer.output.Text(), "SECRET_UNVERIFIED") || !strings.Contains(renderer.output.Text(), "部分补充细节尚未确认。") {
+			t.Fatal("renderer or uploaded artifact diverged from safe final result")
+		}
+		if root := os.Getenv("SEARCHAN_TEST_ARTIFACT_DIR"); root != "" {
+			if err := os.MkdirAll(root, 0700); err != nil {
+				t.Fatal(err)
+			}
+			dir := filepath.Join(root, "verified-gap")
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			output, _ := json.MarshalIndent(record.Output, "", "  ")
+			delivery, _ := json.MarshalIndent(map[string]any{"mode": "synthetic-model-local-telegram", "caption": caption, "deliveries": record.Deliveries, "actual_model_calls": 0, "actual_platform_sends": 0, "mock_images": images.Load()}, "", "  ")
+			for name, data := range map[string][]byte{"output.json": output, "delivery.json": delivery, "uploaded.png": uploaded} {
+				if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
 	}
 }

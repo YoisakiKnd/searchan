@@ -90,6 +90,7 @@ type Stats struct {
 	AnswerRepairs      int                     `json:"answer_repairs,omitempty"`
 	OutputRetries      int                     `json:"output_retries,omitempty"`
 	VerificationIssue  string                  `json:"verification_issue,omitempty"`
+	VerificationGaps   int                     `json:"verification_gaps,omitempty"`
 	VerificationOutput *model.OutputDiagnostic `json:"verification_output,omitempty"`
 	ElapsedMS          int64                   `json:"elapsed_ms"`
 	StageMS            map[string]int64        `json:"stage_ms"`

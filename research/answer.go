@@ -8,7 +8,6 @@ import (
 	"unicode/utf8"
 
 	"searchan/model"
-	"searchan/reader"
 )
 
 var (
@@ -47,13 +46,15 @@ const briefPrompt = answerEvidenceRules + `
 先直接回答核心问题，只保留必要条件。不补充未问的历史、数字、其他项目或学界争议来凑长度。涉及两个主体时写出各自名称；不用省略主体的“两者”“前者”“它们”把原文另一组比较对象接到本问题上。删除非必要例子比压缩成含混指代更合适。
 标题必须与正文的主体和确定程度一致；正文尚不能确定默认或一般情况时，标题也不能写成已确定的默认结论。
 reason=snippets_only 时必须称“搜索摘要显示”，不能声称已读原文或已核实；摘要不足以回答时直说尚不能确定。
-其他 reason 必须依照 evidence.kind 表述资料状态：body 是已读取的正文，不得误称只有搜索摘要。若正文明确提供定义或关系，不要以核验失败为由否认现有信息；只删除 problems 中不受支持的具体断言。
+其他 reason 必须依照 evidence.kind 表述资料状态：body 是已读取的正文，不得误称只有搜索摘要。若正文明确提供定义或关系，不要以核验失败为由否认现有信息；保留有依据的核心结论，删除不受支持的扩展。
 reason=verification_failed 时删除不受支持的数字、版本、时间、条件及结论；reason=verification_unavailable 时采用保守表述。不要声称本总结已经通过事实核验。`
 
 const briefRepairPrompt = briefPrompt + `
 上次生成未满足短总结布局要求，具体原因见 brief_correction。请重新根据 evidence 生成更短的单段总结，目标合计不超过160个字符，不凑字数，不能增加新的事实。不得生成 sections 内容或 table，不要解释修正过程。`
 
 const maxModelCalls = 6 // Shared by all stages, including retrieval correction.
+
+const verificationGapNotice = "部分补充细节尚未确认。"
 
 func (e *Engine) complete(ctx context.Context, out *Output, prompt string, input, result any) error {
 	if err := ctx.Err(); err != nil {
@@ -142,11 +143,12 @@ func (e *Engine) summarize(ctx context.Context, out *Output, recoverEvidence fun
 			}
 			return e.briefSummary(ctx, out, "question_unanswered", "现有资料不足以完整回答本问题，以下仅列出能够确认的内容。")
 		}
-		for _, gap := range checked.Missing {
-			if len(a.Uncertainties) >= 6 {
-				break
-			}
-			a.Uncertainties = append(a.Uncertainties, reader.Clip(gap, 400))
+		// The verifier's new prose was not part of the checked answer and can
+		// introduce factual assertions of its own. Publish only program status;
+		// retain the checked answer and its existing conditions without edits.
+		out.Stats.VerificationGaps = len(checked.Missing)
+		if len(checked.Missing) > 0 && len(a.Uncertainties) < 6 && !contains(a.Uncertainties, verificationGapNotice) {
+			a.Uncertainties = append(a.Uncertainties, verificationGapNotice)
 		}
 	}
 	if err := ValidateAnswer(a, out.Evidence); err != nil {

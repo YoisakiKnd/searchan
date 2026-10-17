@@ -77,7 +77,7 @@ func TestVerificationFallbackUsesFreshBriefSummary(t *testing.T) {
 				t.Fatalf("invalid output: %+v %v", out, err)
 			}
 			if reason == "verified" {
-				if out.AnswerMode != "summary" || calls != 2 || !strings.Contains(out.Text(), "deadline behavior") {
+				if out.AnswerMode != "summary" || calls != 2 || out.Stats.VerificationGaps != 1 || strings.Contains(out.Text(), "deadline behavior") || !strings.Contains(out.Text(), verificationGapNotice) {
 					t.Fatalf("verified answer lost: %+v", out)
 				}
 				return
