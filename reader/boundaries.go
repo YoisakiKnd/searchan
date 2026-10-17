@@ -67,6 +67,10 @@ func navigationAttribute(tag, key, value string) bool {
 		switch strings.ToLower(token) {
 		case "navbox", "vertical-navbox", "catlinks", "mw-normal-catlinks", "mw-hidden-catlinks":
 			return true
+		case "footer", "footers", "mainfooter", "site-footer", "page-footer", "footer-content":
+			return true // legacy sites often use divs instead of a footer landmark
+		case "nav", "navigation", "navbar", "site-nav", "main-nav":
+			return true // the same applies to explicit navigation containers
 		}
 	}
 	return false

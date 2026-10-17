@@ -271,7 +271,7 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 					switch strings.ToLower(string(val)) {
 					case "main":
 						f.main = true
-					case "navigation", "complementary":
+					case "navigation", "complementary", "contentinfo":
 						f.skip = true
 					}
 				}
