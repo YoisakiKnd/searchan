@@ -63,6 +63,9 @@ func requiresFreshQuery(query string) bool {
 func needsFresh(plan Plan) bool { return plan.RequiresFresh || plan.Intent == "recent" }
 
 func normalizePlan(base, proposed Plan) Plan {
+	if len(base.Queries) == 0 {
+		return base
+	}
 	switch proposed.Intent {
 	case "fact", "compare", "howto", "recent", "verify", "navigate":
 		base.Intent = proposed.Intent
@@ -73,10 +76,25 @@ func normalizePlan(base, proposed Plan) Plan {
 	if len(base.Queries) > 0 && inferIntent(base.Queries[0]) == "compare" {
 		base.Intent = "compare"
 	}
+	// A spelling alternative is fallback discovery, not an extra semantic
+	// question. Reserve the original and planned queries before this alternative
+	// so a two-query planner does not silently lose its second query at the cap.
+	variant := searchSpellingQuery(base.Queries[0])
+	variantKey := queryKey(variant)
+	originalKey := queryKey(base.Queries[0])
 	seen := map[string]bool{}
+	queries := make([]string, 0, 4)
 	for _, q := range base.Queries {
-		seen[queryKey(q)] = true
+		key := queryKey(q)
+		if key != originalKey && key == variantKey {
+			continue
+		}
+		if !seen[key] && len(queries) < 4 {
+			queries = append(queries, q)
+			seen[key] = true
+		}
 	}
+	base.Queries = queries
 	for _, q := range proposed.Queries {
 		q = strings.Join(strings.Fields(q), " ")
 		if q == "" {
@@ -84,10 +102,16 @@ func normalizePlan(base, proposed Plan) Plan {
 		}
 		q = anchoredQuery(base.Queries[0], q)
 		key := queryKey(q)
+		if key == variantKey && key != originalKey {
+			continue
+		}
 		if q != "" && len(q) <= 2048 && !seen[key] && len(base.Queries) < 4 {
 			base.Queries = append(base.Queries, q)
 			seen[key] = true
 		}
+	}
+	if !seen[variantKey] && len(base.Queries) < 4 {
+		base.Queries = append(base.Queries, variant)
 	}
 	var aspects []string
 	seen = map[string]bool{}
@@ -123,14 +147,15 @@ func sourceDiscoveryPlan(plan Plan) Plan {
 		queries = append(queries, overviewQuery(entity))
 	}
 	// Prefer a planned query over a spelling-only variant of the raw request.
-	canonical := queryKey(spacedQuery(plan.Queries[0]))
+	variant := searchSpellingQuery(plan.Queries[0])
+	canonical := queryKey(variant)
 	for _, q := range plan.Queries[1:] {
 		if queryKey(q) != canonical && !contains(queries, q) && len(queries) < 3 {
 			queries = append(queries, q)
 		}
 	}
 	if len(queries) < 3 && canonical != queryKey(plan.Queries[0]) {
-		queries = append(queries, spacedQuery(plan.Queries[0]))
+		queries = append(queries, variant)
 	}
 	plan.Queries = queries
 	return plan

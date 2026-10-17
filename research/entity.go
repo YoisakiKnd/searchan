@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"searchan/reader"
 )
@@ -60,6 +61,93 @@ func spacedQuery(query string) string {
 	}
 	flush(len(query))
 	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// Query spelling is narrower than entity matching: keep syntactically marked
+// identifiers literal. A bare product name can still gain a spaced alternative;
+// this is not a classifier for every unmarked API or product name.
+func searchSpellingQuery(query string) string {
+	var b strings.Builder
+	last := 0
+	quote := rune(0)
+	for i := 0; i < len(query); {
+		ch := query[i]
+		if ch >= utf8.RuneSelf {
+			r, size := utf8.DecodeRuneInString(query[i:])
+			if quote == r {
+				quote = 0
+			} else if quote == 0 {
+				switch r {
+				case '“':
+					quote = '”'
+				case '‘':
+					quote = '’'
+				case '「':
+					quote = '」'
+				case '『':
+					quote = '』'
+				}
+			}
+			i += size
+			continue
+		}
+		if ch == '"' || ch == '`' || ch == '\'' {
+			if quote == rune(ch) {
+				quote = 0
+			} else if quote == 0 && (ch != '\'' || i == 0 || !asciiUpper(query[i-1]) && !asciiLower(query[i-1])) {
+				quote = rune(ch)
+			}
+			i++
+			continue
+		}
+		identifier := func(c byte) bool {
+			return asciiUpper(c) || asciiLower(c) || c >= '0' && c <= '9' || strings.ContainsRune("._/+#-:", rune(c))
+		}
+		if !identifier(ch) {
+			i++
+			continue
+		}
+		start := i
+		for i < len(query) && identifier(query[i]) {
+			i++
+		}
+		word := query[start:i]
+		if quote != 0 || !asciiUpper(word[0]) {
+			continue
+		}
+		plain := true
+		for j := range len(word) {
+			plain = plain && (asciiUpper(word[j]) || asciiLower(word[j]))
+		}
+		next := i
+		for next < len(query) && strings.ContainsRune(" \t\r\n", rune(query[next])) {
+			next++
+		}
+		if !plain || next < len(query) && (query[next] == '(' || query[next] == '<') || start > 0 && strings.ContainsRune("@$<>*=!&|", rune(query[start-1])) {
+			continue
+		}
+		parts := camelWords(word)
+		if len(parts) < 2 {
+			continue
+		}
+		for _, part := range parts {
+			plain = plain && len(part) >= 2 && !stopTerms[strings.ToLower(part)]
+		}
+		if !plain {
+			continue
+		}
+		b.WriteString(query[last:start])
+		b.WriteString(strings.Join(parts, " "))
+		if nextRune, _ := utf8.DecodeRuneInString(query[i:]); unicode.Is(unicode.Han, nextRune) {
+			b.WriteByte(' ')
+		}
+		last = i
+	}
+	if last == 0 {
+		return query
+	}
+	b.WriteString(query[last:])
+	return b.String()
 }
 
 // Only strong, explicit compound names constrain evidence. Expansions never
