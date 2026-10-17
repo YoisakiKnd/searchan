@@ -22,15 +22,16 @@ const MaxText = 64 << 10
 const MaxBody = 2 << 20
 
 type Document struct {
-	URL       string    `json:"url"`
-	Title     string    `json:"title"`
-	Text      string    `json:"text"`
-	FetchedAt time.Time `json:"fetched_at"`
-	Hash      string    `json:"hash"`
-	Method    string    `json:"method"`
-	Truncated bool      `json:"truncated,omitempty"`
-	Headings  []Heading `json:"headings,omitempty"`
-	Links     []Link    `json:"links,omitempty"` // bounded discovery hints, never evidence
+	URL        string      `json:"url"`
+	Title      string      `json:"title"`
+	Text       string      `json:"text"`
+	FetchedAt  time.Time   `json:"fetched_at"`
+	Hash       string      `json:"hash"`
+	Method     string      `json:"method"`
+	Truncated  bool        `json:"truncated,omitempty"`
+	Headings   []Heading   `json:"headings,omitempty"`
+	CodeBlocks []CodeBlock `json:"code_blocks,omitempty"`
+	Links      []Link      `json:"links,omitempty"` // bounded discovery hints, never evidence
 }
 
 // Heading locates visible h1–h6 text inside Document.Text by byte offset.
@@ -39,6 +40,13 @@ type Heading struct {
 	Start int `json:"start"`
 	End   int `json:"end"`
 	Level int `json:"level"`
+}
+
+// CodeBlock locates visible preformatted text by byte offsets in Document.Text.
+// It describes layout, never the language, correctness or authority of code.
+type CodeBlock struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
 type Link struct {
@@ -157,6 +165,7 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 	var truncated bool
 	var links []Link
 	var headings []Heading
+	var codeBlocks []CodeBlock
 	if strings.Contains(ct, "text/plain") {
 		data, readErr := io.ReadAll(io.LimitReader(lr, MaxText+1))
 		if readErr != nil {
@@ -165,7 +174,7 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 		text = Clip(strings.TrimSpace(string(data)), MaxText)
 		truncated = len(data) > MaxText
 	} else {
-		title, text, truncated, links, headings, err = extractOutlinedPage(lr, res.Request.URL.String())
+		title, text, truncated, links, headings, codeBlocks, err = extractDocumentPage(lr, res.Request.URL.String())
 		if err != nil {
 			return Document{}, err
 		}
@@ -180,6 +189,7 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 	doc.Truncated = truncated
 	doc.Links = links
 	doc.Headings = headings
+	doc.CodeBlocks = codeBlocks
 	if utf8.RuneCountInString(text) < 40 {
 		// A sparse project landing page may still link to its documentation.
 		// Return metadata with the error; callers must not accept this as evidence.

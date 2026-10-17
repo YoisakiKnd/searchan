@@ -92,9 +92,9 @@ func (c *Cache) ReadFresh(ctx context.Context, raw string) (Document, error) {
 }
 
 func (c *Cache) read(ctx context.Context, raw string, ttl time.Duration) (Document, error) {
-	// Extraction rules changed: legacy text may lack outlines or contain navigation.
+	// Extraction rules changed: legacy text may lack code boundaries or outlines.
 	// Namespace the disk key so the next read refreshes it without deleting data.
-	hash := sha256.Sum256([]byte("page-text-v8\x00" + raw))
+	hash := sha256.Sum256([]byte("page-text-v9\x00" + raw))
 	key := hex.EncodeToString(hash[:])
 	path := filepath.Join(c.Dir, key+".json")
 	gate := c.gate(hash[0])

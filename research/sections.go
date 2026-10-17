@@ -2,6 +2,7 @@ package research
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"searchan/reader"
@@ -22,6 +23,8 @@ func documentPassages(doc reader.Document) []passage {
 		}
 		previous, previousEnd = h.Start, h.End
 	}
+	code := validCodeBlocks(text, doc.CodeBlocks)
+	codeCursor := 0
 	var out []passage
 	start, paragraph := 0, 1
 	heading := ""
@@ -37,15 +40,51 @@ func documentPassages(doc reader.Document) []passage {
 				body = section[:cut]
 			}
 		}
-		parts := splitPassages(body)
-		for i := range parts {
-			parts[i].first += paragraph - 1
-			parts[i].last += paragraph - 1
-			if i == 0 && len(heading) <= 240 && len(parts[i].text) >= len(heading)+40 {
-				parts[i].heading = heading
+		appendParts := func(segment string, offset int, prose bool) {
+			parts := splitPassages(segment)
+			base := paragraph - 1 + strings.Count(section[:offset], "\n\n")
+			for i := range parts {
+				parts[i].first += base
+				parts[i].last += base
+				minimum := len(heading) + 40
+				if prose {
+					minimum = 40
+				}
+				if i == 0 && len(heading) <= 240 && len(parts[i].text) >= minimum {
+					parts[i].heading = heading
+				}
+			}
+			out = append(out, parts...)
+		}
+		for codeCursor < len(code) && code[codeCursor].End <= start {
+			codeCursor++
+		}
+		cut := 0
+		if codeCursor < len(code) {
+			c := code[codeCursor]
+			// A declaration comes directly after its visible section heading.
+			// The first prose afterwards carries the same heading context; later
+			// examples do not displace an already present explanatory opening.
+			if heading != "" && c.Start >= start && c.End < start+len(body) && c.Start-start <= 512 && strings.TrimSpace(body[:c.Start-start]) == heading {
+				// Adjacent pre blocks (including malformed nested markup) still
+				// form the leading declaration, not explanatory prose.
+				for i := codeCursor + 1; i < len(code); i++ {
+					next := code[i]
+					if next.End > start+len(body) || strings.TrimSpace(text[c.End:next.Start]) != "" {
+						break
+					}
+					c.End = next.End
+				}
+				cut = c.End - start
+				cut += len(body[cut:]) - len(strings.TrimLeftFunc(body[cut:], unicode.IsSpace))
 			}
 		}
-		out = append(out, parts...)
+		if cut > 0 && cut < len(body) {
+			appendParts(body[:cut], 0, false)
+			appendParts(body[cut:], cut, true)
+		} else {
+			appendParts(body, 0, false)
+		}
 		paragraph += strings.Count(section, "\n\n")
 		start = end
 	}
@@ -57,6 +96,20 @@ func documentPassages(doc reader.Document) []passage {
 	}
 	emit(len(text))
 	return out
+}
+
+func validCodeBlocks(text string, blocks []reader.CodeBlock) []reader.CodeBlock {
+	if len(blocks) > 128 {
+		return nil
+	}
+	end := 0
+	for _, c := range blocks {
+		if c.Start < end || c.Start < 0 || c.End <= c.Start || c.End > len(text) || !utf8.RuneStart(text[c.Start]) || c.End < len(text) && !utf8.RuneStart(text[c.End]) {
+			return nil
+		}
+		end = c.End
+	}
+	return blocks
 }
 
 func generatedOverviewStart(section string) int {

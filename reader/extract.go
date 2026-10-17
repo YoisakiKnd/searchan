@@ -22,6 +22,8 @@ type textSink struct {
 	truncated               bool
 	headings                []Heading
 	headingID, headingIndex int
+	codeBlocks              []CodeBlock
+	codeID, codeIndex       int
 }
 
 func (s *textSink) append(raw []byte) {
@@ -77,12 +79,16 @@ func (s *textSink) text(raw []byte, pre bool) {
 
 // Capture offsets in the same bounded builder that emits the final text, so
 // discarded navigation or promotion to articleBody cannot misalign sections.
-func (s *textSink) content(raw []byte, pre bool, id, level int) {
-	if id == 0 {
-		s.text(raw, pre)
-		return
+func (s *textSink) content(raw []byte, code, id, level int) {
+	if code > 0 && code != s.codeID {
+		s.codeID, s.codeIndex = code, -1
+		s.flush()
+		if s.b.Len() < s.limit && len(s.codeBlocks) < 128 {
+			s.codeIndex = len(s.codeBlocks)
+			s.codeBlocks = append(s.codeBlocks, CodeBlock{Start: s.b.Len(), End: s.b.Len()})
+		}
 	}
-	if id != s.headingID {
+	if id != 0 && id != s.headingID {
 		s.headingID, s.headingIndex = id, -1
 		s.flush()
 		if s.b.Len() < s.limit && len(s.headings) < 128 {
@@ -90,13 +96,16 @@ func (s *textSink) content(raw []byte, pre bool, id, level int) {
 			s.headings = append(s.headings, Heading{Start: s.b.Len(), End: s.b.Len(), Level: level})
 		}
 	}
-	s.text(raw, pre)
-	if s.headingIndex >= 0 {
+	s.text(raw, code > 0)
+	if id != 0 && s.headingIndex >= 0 {
 		s.headings[s.headingIndex].End = s.b.Len()
+	}
+	if code > 0 && s.codeIndex >= 0 {
+		s.codeBlocks[s.codeIndex].End = s.b.Len()
 	}
 }
 
-func (s *textSink) result() (string, []Heading) {
+func (s *textSink) result() (string, []Heading, []CodeBlock) {
 	raw := s.b.String()
 	left := strings.TrimLeftFunc(raw, unicode.IsSpace)
 	offset := len(raw) - len(left)
@@ -109,7 +118,15 @@ func (s *textSink) result() (string, []Heading) {
 			out = append(out, h)
 		}
 	}
-	return text, out
+	code := s.codeBlocks[:0]
+	for _, c := range s.codeBlocks {
+		c.Start = max(0, c.Start-offset)
+		c.End = min(c.End-offset, len(text))
+		if c.Start >= 0 && c.End > c.Start && c.Start < len(text) {
+			code = append(code, c)
+		}
+	}
+	return text, out, code
 }
 
 func htmlSpace(b byte) bool { return b <= ' ' && (b == ' ' || b >= '\t' && b <= '\r' && b != '\v') }
@@ -132,6 +149,11 @@ func extractPage(r io.Reader, pageURL string) (string, string, bool, []Link, err
 }
 
 func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []Link, []Heading, error) {
+	title, text, truncated, links, headings, _, err := extractDocumentPage(r, pageURL)
+	return title, text, truncated, links, headings, err
+}
+
+func extractDocumentPage(r io.Reader, pageURL string) (string, string, bool, []Link, []Heading, []CodeBlock, error) {
 	base, _ := url.Parse(pageURL)
 	selfURL, _, _ := strings.Cut(pageURL, "#")
 	var links []Link
@@ -141,12 +163,13 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 	z.SetMaxBuf(256 << 10)
 	all, main, title := textSink{limit: MaxText}, textSink{limit: MaxText}, textSink{limit: 512}
 	type frame struct {
-		tag                                   string
-		skip, main, body, article, title, pre bool
-		link, heading                         int
+		tag                              string
+		skip, main, body, article, title bool
+		link, heading, code              int
 	}
 	stack := make([]frame, 0, 32)
-	skip, primary, inBody, inArticle, inTitle, pre := 0, 0, 0, 0, 0, 0
+	skip, primary, inBody, inArticle, inTitle := 0, 0, 0, 0, 0
+	activeCode, codeSequence := 0, 0
 	selected := 0
 	activeLink := 0
 	activeHeading, headingSequence := 0, 0
@@ -154,9 +177,11 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 	pop := func(i int) {
 		linkClosed := false
 		headingClosed := false
+		codeClosed := false
 		for _, f := range stack[i:] {
 			linkClosed = linkClosed || f.link != 0
 			headingClosed = headingClosed || f.heading > 0
+			codeClosed = codeClosed || f.code > 0
 			if f.skip {
 				skip--
 			}
@@ -172,11 +197,17 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 			if f.title {
 				inTitle--
 			}
-			if f.pre {
-				pre--
-			}
 		}
 		stack = stack[:i]
+		if codeClosed {
+			activeCode = 0
+			for j := len(stack) - 1; j >= 0; j-- {
+				if stack[j].code > 0 {
+					activeCode = stack[j].code
+					break
+				}
+			}
+		}
 		if headingClosed {
 			activeHeading = 0
 			for j := len(stack) - 1; j >= 0; j-- {
@@ -209,12 +240,12 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 		switch tt {
 		case html.ErrorToken:
 			if z.Err() != io.EOF {
-				return "", "", false, nil, nil, fmt.Errorf("HTML tokenization: %w", z.Err())
+				return "", "", false, nil, nil, nil, fmt.Errorf("HTML tokenization: %w", z.Err())
 			}
-			text, headings := all.result()
+			text, headings, codeBlocks := all.result()
 			truncated := all.truncated
 			if strings.TrimSpace(main.b.String()) != "" {
-				text, headings = main.result()
+				text, headings, codeBlocks = main.result()
 				truncated = main.truncated
 			}
 			// External sources retain all 32 slots. At most eight same-site
@@ -224,7 +255,7 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 			} else {
 				links = append(links, sameSite[:min(len(sameSite), 32-len(links))]...)
 			}
-			return strings.TrimSpace(title.b.String()), text, truncated, links, headings, nil
+			return strings.TrimSpace(title.b.String()), text, truncated, links, headings, codeBlocks, nil
 		case html.StartTagToken, html.SelfClosingTagToken:
 			name, more := z.TagName()
 			tag := atom.Lookup(name).String()
@@ -243,7 +274,7 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 					}
 				}
 			}
-			f := frame{tag: tag, skip: skipTag(tag) || tag == "title" || tag == "header" && primary == 0, main: tag == "main" || tag == "article", article: tag == "article", title: documentTitle, pre: tag == "pre"}
+			f := frame{tag: tag, skip: skipTag(tag) || tag == "title" || tag == "header" && primary == 0, main: tag == "main" || tag == "article", article: tag == "article", title: documentTitle}
 			if documentTitle {
 				titleSeen = true
 			}
@@ -319,15 +350,22 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 			}
 			if tt != html.SelfClosingTagToken && !voidTag(tag) {
 				if len(stack) >= 512 {
-					return "", "", false, nil, nil, errors.New("HTML nesting limit exceeded")
+					return "", "", false, nil, nil, nil, errors.New("HTML nesting limit exceeded")
 				}
 				if len(tag) == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6' {
 					headingSequence++
 					f.heading = headingSequence
 				}
+				if tag == "pre" {
+					codeSequence++
+					f.code = codeSequence
+				}
 				stack = append(stack, f)
 				if f.heading > 0 {
 					activeHeading = len(stack)
+				}
+				if f.code > 0 {
+					activeCode = f.code
 				}
 				if f.link != 0 {
 					activeLink = f.link
@@ -346,9 +384,6 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 				}
 				if f.title {
 					inTitle++
-				}
-				if f.pre {
-					pre++
 				}
 				if tag == "script" || tag == "style" {
 					// Large inline assets are not evidence. Permit a bounded raw
@@ -412,7 +447,7 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 							id = f.heading
 							level = int(f.tag[1] - '0')
 						}
-						main.content(raw, pre > 0, id, level)
+						main.content(raw, activeCode, id, level)
 					}
 				} else if main.b.Len() == 0 {
 					// Once explicit primary text exists, the fallback builder can
@@ -423,7 +458,7 @@ func extractOutlinedPage(r io.Reader, pageURL string) (string, string, bool, []L
 						id = f.heading
 						level = int(f.tag[1] - '0')
 					}
-					all.content(raw, pre > 0, id, level)
+					all.content(raw, activeCode, id, level)
 				}
 			}
 		}
