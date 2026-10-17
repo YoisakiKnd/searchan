@@ -2,7 +2,7 @@
 
 2026-10-12，macOS arm64，Go 1.27.2，Typst 0.15.1，govulncheck 1.8.0。状态：用户已开始 Linux 部署联调，完整生产验收尚未完成。
 
-最新本地状态（2026-10-17）：限定参考初读并发、独立短总结输入已实现，本轮最终完整工程检查通过。当前模型在注入核验不可用后从原证据生成短总结，经实际Typst向模拟Telegram交付一条图片消息，事实/标准2/2；新实网完整链路完成，事实通过但标准1/2，参考召回/读取仍有缺口，不能视为完整质量通过。受控读取中位数101→62ms不代表公网提速。详见 [QUALITY_ITERATION_37.md](QUALITY_ITERATION_37.md)。此前21b67ef的[Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/38987065319)通过安装、升级/回滚和双架构打包；本轮改动以对应提交的远端运行结果为准。正式质量与目标环境门槛未完成；以下为历史记录。
+最新本地状态（2026-10-17）：失败参考在现有候选页数内增加一次有界替代读取，真实保存资料回放取得可读镜像，最终完整工程检查通过。原始SpringData简介新实网约12秒完成单图，核心与三个题目标准通过，但一条陈述的引用覆盖不完整；findBy新增资料实验仍有默认方法范围含混，不能视为完整质量通过。详见 [QUALITY_ITERATION_38.md](QUALITY_ITERATION_38.md)。此前4fb6135的[Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/38993753919)通过安装、升级/回滚和双架构打包；本轮改动以对应提交的远端运行结果为准。正式质量与目标环境门槛未完成；以下为历史记录。
 
 RC.6 发布准备：包含自适应取证、本地 quality 测试、简单简介写作范围、正文边界及安全 JSON 诊断。本地完整检查通过，新增错误隐私/不重试用例另通过 model/quality race。四份原 HTML 边界检查通过，但第三轮真实模型五次尝试只有两次完成、三次失败，准确性与稳定性仍未通过；详见 [QUALITY_ITERATION_03.md](QUALITY_ITERATION_03.md) 与 [CHANGELOG.md](CHANGELOG.md)。Linux 包补齐公开题集及效果测试说明；私有配置、HTML/正文快照和 PNG 均不发布。远端构建状态以 Actions 为准。
 

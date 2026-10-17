@@ -111,12 +111,14 @@ type Stats struct {
 
 // CoverageCandidate records the bounded menu offered to the coverage model.
 // Selected means an existing ID passed selection and page-budget checks;
+// Fallback distinguishes a program-chosen alternative after a failed read.
 // page_reads records whether the read actually started and its outcome.
 type CoverageCandidate struct {
 	ID       string `json:"id"`
 	URL      string `json:"url"`
 	Origin   string `json:"origin"`
 	Selected bool   `json:"selected,omitempty"`
+	Fallback bool   `json:"fallback,omitempty"`
 }
 
 // PageRead retains bounded provenance and outcome metadata, never page text.

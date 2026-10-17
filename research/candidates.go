@@ -193,7 +193,23 @@ func (g *gathering) readCoverageCandidates(ctx context.Context, pool []coverageC
 	}
 	before := g.out.Stats.PagesRead
 	beforeDocs := len(g.reading.docs)
+	beforeTraces := len(g.out.Stats.PageReads)
 	g.out.Warnings = append(g.out.Warnings, g.reading.read(ctx, g.out.Plan, selected, budget)...)
+	// A coverage model may select a reference while considering the tutorials
+	// sufficient. A failed read must not silently discard that discovery path.
+	// Use at most one existing alternative, inside the same two-page allowance;
+	// do not search, call a model again, or follow links from the new body.
+	if len(selected) < budget && ctx.Err() == nil {
+		if alternative := g.failedReferenceAlternative(pool, g.out.Stats.PageReads[beforeTraces:]); alternative.URL != "" {
+			for i := range g.out.Stats.CoverageCandidates {
+				if g.out.Stats.CoverageCandidates[i].URL == alternative.URL {
+					g.out.Stats.CoverageCandidates[i].Fallback = true
+					break
+				}
+			}
+			g.out.Warnings = append(g.out.Warnings, g.reading.read(ctx, g.out.Plan, []hit{alternative}, 1)...)
+		}
+	}
 	g.out.Stats.CandidateReads += g.out.Stats.PagesRead - before
 	g.out.Evidence = SelectEvidenceForPlan(g.out.Plan, g.reading.docs, g.reading.published, g.engine.cfg.MaxEvidence)
 	for _, doc := range g.reading.docs[beforeDocs:] {
@@ -204,4 +220,43 @@ func (g *gathering) readCoverageCandidates(ctx context.Context, pool []coverageC
 		}
 	}
 	return false
+}
+
+func (g *gathering) failedReferenceAlternative(pool []coverageCandidate, traces []PageRead) hit {
+	anyFailure := false
+	for _, trace := range traces {
+		anyFailure = anyFailure || trace.State == "failed" || trace.State == "rejected"
+	}
+	if !anyFailure {
+		return hit{}
+	}
+	scorer := newReferenceMatcher(g.out.Plan)
+	failed := false
+	for _, trace := range traces {
+		for _, c := range pool {
+			if c.URL != trace.URL || scorer.score(c.Title, c.URL) == 0 {
+				continue
+			}
+			if trace.State == "accepted" || trace.State == "duplicate" {
+				return hit{}
+			}
+			failed = failed || trace.State == "failed" || trace.State == "rejected"
+		}
+	}
+	if !failed {
+		return hit{}
+	}
+	var best hit
+	bestScore := 0.0
+	for _, c := range pool {
+		key := search.DocumentURL(c.URL)
+		if key == "" || len(key) > 2048 || g.reading.attempted[key] || reader.ValidateURL(key) != nil {
+			continue
+		}
+		if weight := scorer.score(c.Title, key); weight > bestScore {
+			bestScore, best = weight, c.hit
+			best.URL, best.pageKey = key, key
+		}
+	}
+	return best
 }

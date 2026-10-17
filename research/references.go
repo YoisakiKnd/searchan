@@ -79,48 +79,61 @@ func (g *gathering) readRelevantReference(ctx context.Context, pageLimit int) {
 	g.out.Evidence = SelectEvidenceForPlan(g.out.Plan, g.reading.docs, g.reading.published, g.engine.cfg.MaxEvidence)
 }
 
+// Shared metadata fit for discovery only; it never authenticates a publisher.
+// Keep lazy tokenization state on the caller's stack, rather than capturing it
+// in a returned closure on every normal reference check.
+type referenceMatcher struct {
+	plan        Plan
+	entities    []string
+	entityTerms map[string]bool
+	lexical     *lexical
+	scratch     []uint16
+}
+
+func newReferenceMatcher(plan Plan) referenceMatcher {
+	return referenceMatcher{plan: plan, entities: referenceEntities(plan)}
+}
+
+func (s *referenceMatcher) score(title, raw string) float64 {
+	if len(s.plan.Queries) == 0 || !referencePage(title, raw) || !matchesEntities(title+" "+raw, s.entities) {
+		return 0
+	}
+	if s.lexical == nil {
+		s.entityTerms = make(map[string]bool)
+		for _, entity := range s.entities {
+			scanTerms(spacedQuery(entity), func(term string) { s.entityTerms[term] = true })
+		}
+		s.lexical = newLexical(strings.Join(s.plan.Queries[:min(3, len(s.plan.Queries))], " "), s.plan.Aspects, nil)
+		s.scratch = make([]uint16, len(s.lexical.terms))
+	}
+	address := strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://")
+	v := s.lexical.vector(strings.ToLower(title+" "+address), s.scratch)
+	matched, topic, weight := 0, false, 0.0
+	for _, f := range v.matches {
+		term := s.lexical.terms[f.term]
+		if substantiveReferenceTerm(term.text) {
+			matched++
+			weight += term.weight
+			topic = topic || !s.entityTerms[term.text]
+		}
+	}
+	if matched < 2 || !topic {
+		return 0
+	}
+	return weight
+}
+
 // searchReference fills the same single discovery-read slot, not a separate
 // stage. It cannot introduce a URL absent from the actual provider results.
 func searchReference(plan Plan, hits []hit, docs []reader.Document, attempted map[string]bool) hit {
 	if len(plan.Queries) == 0 {
 		return hit{}
 	}
-	entities := referenceEntities(plan)
-	var entityTerms map[string]bool
-	var l *lexical
-	var scratch []uint16
-	score := func(title, raw string) float64 {
-		if !referencePage(title, raw) || !matchesEntities(title+" "+raw, entities) {
-			return 0
-		}
-		if l == nil {
-			entityTerms = make(map[string]bool)
-			for _, entity := range entities {
-				scanTerms(spacedQuery(entity), func(term string) { entityTerms[term] = true })
-			}
-			l = newLexical(strings.Join(plan.Queries[:min(3, len(plan.Queries))], " "), plan.Aspects, nil)
-			scratch = make([]uint16, len(l.terms))
-		}
-		address := strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://")
-		v := l.vector(strings.ToLower(title+" "+address), scratch)
-		matched, topic, weight := 0, false, 0.0
-		for _, f := range v.matches {
-			term := l.terms[f.term]
-			if substantiveReferenceTerm(term.text) {
-				matched++
-				weight += term.weight
-				topic = topic || !entityTerms[term.text]
-			}
-		}
-		if matched < 2 || !topic {
-			return 0
-		}
-		return weight
-	}
+	scorer := newReferenceMatcher(plan)
 	// Avoid another search-prefetch when a matching reference is already read.
 	// Explicit body links above can still refine a reference within the one slot.
 	for _, doc := range docs {
-		if score(reader.Clip(doc.Title, 200), doc.URL) > 0 {
+		if scorer.score(reader.Clip(doc.Title, 200), doc.URL) > 0 {
 			return hit{}
 		}
 	}
@@ -134,7 +147,7 @@ func searchReference(plan Plan, hits []hit, docs []reader.Document, attempted ma
 				continue
 			}
 			seen[key] = true
-			if weight := score(reader.Clip(h.Title, 200), key); weight > bestScore {
+			if weight := scorer.score(reader.Clip(h.Title, 200), key); weight > bestScore {
 				bestScore, best = weight, h
 				best.URL, best.pageKey = key, key
 			}
