@@ -25,6 +25,8 @@ var ErrBusy = errors.New("task queue is full")
 var ErrQuota = errors.New("active task quota exceeded")
 var ErrNotCancellable = errors.New("task can no longer be cancelled")
 
+const InterruptedResearch = "service interrupted while processing; submit a new request"
+
 type Delivery struct {
 	Kind    string `json:"kind"`
 	Page    int    `json:"page"`
@@ -32,18 +34,19 @@ type Delivery struct {
 	Receipt string `json:"receipt,omitempty"`
 }
 type Record struct {
-	ID         string             `json:"id"`
-	Query      string             `json:"query"`
-	Deep       bool               `json:"deep,omitempty"`
-	Target     platform.Target    `json:"target"`
-	State      string             `json:"state"`
-	Created    time.Time          `json:"created"`
-	Updated    time.Time          `json:"updated"`
-	Output     *research.Output   `json:"output,omitempty"`
-	Artifacts  []render.Artifact  `json:"artifacts,omitempty"`
-	Deliveries []Delivery         `json:"deliveries,omitempty"`
-	Error      string             `json:"error,omitempty"`
-	Failure    *FailureDiagnostic `json:"failure,omitempty"`
+	ID             string             `json:"id"`
+	Query          string             `json:"query"`
+	Deep           bool               `json:"deep,omitempty"`
+	Target         platform.Target    `json:"target"`
+	State          string             `json:"state"`
+	Created        time.Time          `json:"created"`
+	Updated        time.Time          `json:"updated"`
+	Output         *research.Output   `json:"output,omitempty"`
+	Artifacts      []render.Artifact  `json:"artifacts,omitempty"`
+	Deliveries     []Delivery         `json:"deliveries,omitempty"`
+	Error          string             `json:"error,omitempty"`
+	Failure        *FailureDiagnostic `json:"failure,omitempty"`
+	RecoveryNotice bool               `json:"recovery_notice,omitempty"`
 }
 
 // FailureDiagnostic retains only counts and fixed search failure categories.
@@ -109,7 +112,10 @@ func Open(dir string, capacity int) (*Store, error) {
 			// A crash during unknown remote work must not automatically repeat paid
 			// requests. Completed research is persisted before render/send.
 			rec.State = "failed"
-			rec.Error = "service interrupted while processing; submit a new request"
+			if rec.Error == "" {
+				rec.Error = InterruptedResearch
+				rec.RecoveryNotice = rec.Output == nil
+			}
 			return s.save(rec)
 		case "sending":
 			rec.State = "uncertain"

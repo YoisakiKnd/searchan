@@ -32,6 +32,10 @@ class Fixtures:
         self.release = threading.Event()
         self.release.set()
         self.blocked = 0
+        self.research_release = threading.Event()
+        self.research_release.set()
+        self.research_blocked = 0
+        self.recovery_notices = collections.Counter()
         self.images = collections.Counter()
         self.accepted = 0
         self.statuses = 0
@@ -55,12 +59,20 @@ class Fixtures:
             elif "answer" in source:
                 answer = {"answers_query": True, "unsupported": [], "missing": []}
             else:
+                with self.lock:
+                    if not self.research_release.is_set():
+                        self.research_blocked += 1
+                assert self.research_release.wait(30), "research response gate expired"
                 answer = {"answers_query": True, "title": "Atlas cancellation", "lead": {"text": "Atlas cancellation signals workers; stopping requires cooperative checks.", "evidence_ids": [source["evidence"][0]["id"]]}, "sections": [], "uncertainties": []}
             return {"choices": [{"message": {"content": json.dumps(answer)}, "finish_reason": "stop"}]}
         if path.endswith("/sendMessage"):
             with self.lock:
                 self.accepted += data["text"].startswith("开始搜索。")
                 self.statuses += "发送结果待核对" in data["text"]
+                if data["text"].startswith("服务中断，本次搜索未能完成"):
+                    assert data["message_thread_id"] == 5
+                    reply = data["reply_parameters"]
+                    self.recovery_notices[(data["chat_id"], reply["message_id"])] += 1
             return {"ok": True, "result": {"message_id": self.calls[path] + 100}}
         if path.endswith("/sendPhoto"):
             png = data["photo"]
@@ -245,10 +257,10 @@ def main():
         service = Service(args, env, out)
         service.start()
 
-        def wait(predicate, reason):
+        def wait(predicate, reason, allow_interrupted=False):
             while time.monotonic() < deadline:
                 assert not fixture.errors, fixture.errors
-                assert not any(r["state"] == "failed" for r in records()), "service task failed; inspect service log and task state"
+                assert not any(r["state"] == "failed" and not (allow_interrupted and r.get("error") == "service interrupted while processing; submit a new request") for r in records()), "service task failed; inspect service log and task state"
                 if predicate():
                     return
                 service.sample()
@@ -262,8 +274,11 @@ def main():
             except (OSError, urllib.error.URLError):
                 return False
 
-        def records():
+        def all_records():
             return [json.loads(p.read_text()) for p in service.data.glob("*/task.json")]
+
+        def records():
+            return [r for r in all_records() if r["query"]]
 
         def submit(i, text=None):
             question = text or ("/search " if i % 2 == 0 else "@ci_bot ") + "Atlas cancellation contract task " + str(i)
@@ -288,10 +303,23 @@ def main():
         wait(ready, "service did not recover")
         wait(lambda: len(records()) == 12 and sum(r["state"] == "completed" for r in records()) == 10 and sum(r["state"] == "uncertain" for r in records()) == 2, "restart lost queued work or repeated an ambiguous send")
         service.sample()
+        fixture.research_release.clear()
+        for i in range(12, 16):
+            submit(i)
+        wait(lambda: fixture.research_blocked == 2 and sum(r["state"] == "running" for r in records()) == 2, "two research tasks did not reach the crash barrier")
+        service.kill_and_restart()
+        fixture.research_release.set()
+        wait(ready, "service did not recover interrupted research", allow_interrupted=True)
+        wait(lambda: len(records()) == 16 and sum(r["state"] == "completed" for r in records()) == 12 and sum(r["state"] == "failed" for r in records()) == 2 and len(fixture.recovery_notices) == 2 and all(r["state"] == "completed" for r in all_records() if not r["query"]), "interrupted research was repeated, not notified, or queued work was lost", allow_interrupted=True)
+        service.sample()
         final = records()
-        assert fixture.accepted == 12 and len(fixture.images) == 12 and all(n == 1 for n in fixture.images.values())
-        assert fixture.calls["/model"] == 48 and fixture.calls["/search"] == 12, "restart repeated research requests"
+        assert fixture.accepted == 16 and len(fixture.images) == 14 and all(n == 1 for n in fixture.images.values())
+        assert len(fixture.recovery_notices) == 2 and all(n == 1 for n in fixture.recovery_notices.values())
+        assert fixture.calls["/model"] == 62 and fixture.calls["/search"] == 16, "restart repeated research requests"
         for record in final:
+            if record["state"] == "failed":
+                assert not record.get("output") and not record.get("recovery_notice") and len(record["deliveries"]) == 1
+                continue
             assert record["output"]["stats"]["model_calls"] == 4 and len(record["artifacts"]) == 1
             assert record["output"]["stats"]["reader_calls"] == record["output"]["stats"]["fallback_reads"] == 0, "fixture result caused a public Reader request"
             artifact = record["artifacts"][0]
@@ -299,8 +327,8 @@ def main():
             assert len(record["deliveries"]) == 2
         if args.systemd:
             assert service.samples, "cgroup memory peak was not available"
-            assert int(systemctl("show", "-p", "NRestarts", "--value")) == service.restart_baseline + 1, "missing deliberate restart or additional unexpected restarts"
-        report = {"mode": "native-systemd-local-fixtures" if args.systemd else "native-local-process-fixtures", "tasks": 12, "normal_completed": 8, "normal_batch_ms": normal_ms, "after_restart_completed": 10, "after_restart_uncertain": 2, "mock_images": sum(fixture.images.values()), "mock_accepted": fixture.accepted, "duplicate_webhooks": 12, "model_adapter_requests": fixture.calls["/model"], "search_adapter_requests": fixture.calls["/search"], "actual_model_search_platform_calls": 0, "cgroup": service.samples[-1] if service.samples else None, "cgroup_max_observed_peak_bytes": max((s["memory_peak_bytes"] for s in service.samples), default=None), "elapsed_ms": round((time.monotonic() - started) * 1000)}
+            assert int(systemctl("show", "-p", "NRestarts", "--value")) == service.restart_baseline + 2, "missing deliberate restart or additional unexpected restarts"
+        report = {"mode": "native-systemd-local-fixtures" if args.systemd else "native-local-process-fixtures", "tasks": 16, "normal_completed": 8, "normal_batch_ms": normal_ms, "after_restart_completed": 12, "after_restart_uncertain": 2, "after_restart_failed": 2, "mock_recovery_notices": sum(fixture.recovery_notices.values()), "mock_images": sum(fixture.images.values()), "mock_accepted": fixture.accepted, "duplicate_webhooks": 16, "model_adapter_requests": fixture.calls["/model"], "search_adapter_requests": fixture.calls["/search"], "actual_model_search_platform_calls": 0, "cgroup": service.samples[-1] if service.samples else None, "cgroup_max_observed_peak_bytes": max((s["memory_peak_bytes"] for s in service.samples), default=None), "elapsed_ms": round((time.monotonic() - started) * 1000)}
         (out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         (out / "tasks.json").write_text(json.dumps(final, indent=2) + "\n")
         print(json.dumps(report))
@@ -309,6 +337,7 @@ def main():
         raise
     finally:
         fixture.release.set()
+        fixture.research_release.set()
         if service is not None:
             service.close()
         upstream.shutdown()

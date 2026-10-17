@@ -21,18 +21,19 @@ import (
 )
 
 type Server struct {
-	Runtime  *Runtime
-	Store    *task.Store
-	wake     chan struct{}
-	mu       sync.Mutex
-	cancel   map[string]context.CancelFunc
-	last     map[string]time.Time
-	draining atomic.Bool
-	probeMu  sync.Mutex
-	probeAt  time.Time
-	probeErr error
-	claimMu  sync.Mutex
-	active   atomic.Int64
+	Runtime         *Runtime
+	Store           *task.Store
+	wake            chan struct{}
+	mu              sync.Mutex
+	cancel          map[string]context.CancelFunc
+	last            map[string]time.Time
+	draining        atomic.Bool
+	probeMu         sync.Mutex
+	probeAt         time.Time
+	probeErr        error
+	claimMu         sync.Mutex
+	active          atomic.Int64
+	recoveryStarted atomic.Bool
 }
 
 func NewServer(r *Runtime) (*Server, error) {
@@ -311,14 +312,19 @@ func (s *Server) deliverReply(ctx context.Context, event platform.Event, reply t
 	sender := s.Runtime.Senders[event.Target.Platform]
 	replyCtx, stop := context.WithTimeout(ctx, 4*time.Second)
 	defer stop()
+	sequenceOffset := 0
+	if len(reply.Deliveries) > 0 && reply.Deliveries[0].Page > 0 {
+		sequenceOffset = reply.Deliveries[0].Page - 1
+	}
 	for i, chunk := range textChunks(text, 3000) {
+		seq := sequenceOffset + i + 1
 		if i > 0 {
-			reply.Deliveries = append(reply.Deliveries, task.Delivery{Kind: "control", Page: i + 1, State: "sending"})
+			reply.Deliveries = append(reply.Deliveries, task.Delivery{Kind: "control", Page: seq, State: "sending"})
 			if err := s.Store.Save(reply); err != nil {
 				return err
 			}
 		}
-		receipt, sendErr := sender.SendText(replyCtx, event.Target, chunk, i+1)
+		receipt, sendErr := sender.SendText(replyCtx, event.Target, chunk, seq)
 		reply.Deliveries[i].State = "sent"
 		reply.Deliveries[i].Receipt = receipt.MessageID
 		if sendErr != nil {
@@ -465,6 +471,7 @@ drain:
 	return nil
 }
 func (s *Server) worker(ctx context.Context) {
+	s.recoverNotifications(ctx)
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
