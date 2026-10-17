@@ -2,7 +2,7 @@
 
 2026-10-12，macOS arm64，Go 1.27.2，Typst 0.15.1，govulncheck 1.8.0。状态：用户已开始 Linux 部署联调，完整生产验收尚未完成。
 
-最新本地状态（2026-10-17）：自动拼写变体不再挤掉第二条语义规划，明确API/路径/引号拼写保持，原始查询与内部实体判断保留。十组旧资料读取/证据一致，最终本地完整检查通过。两题新实网均完成单图，context读到原始API；全文仍一错一不明确。JPA原始核心章节已读取却漏选，及无依据限制扩写仍待修复；完整质量未通过。详见 [QUALITY_ITERATION_46.md](QUALITY_ITERATION_46.md)。此前573c380的[Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/39018007841)通过16任务双崩溃、恢复通知去重、安装回滚与双架构打包，受控峰值61.12MiB、零OOM；本轮远端数据按新提交另核对。用户目标环境门槛未完成；以下为历史记录。
+最新本地状态（2026-10-17）：章节标题加分以该段正文相关分为上限，原始Query Creation进入证据；原文、实体与预算不变，完整本地检查通过。十组回放读取相同、四组补充段替换已保留；固定对照两边均能答对，不宣称稳定准确率改善。新实网两题单图，全文一通过一不明确，JWT仍缺少应用条件；已读页面的RFC链接没有进入覆盖候选，下一步继续修复。详见 [QUALITY_ITERATION_47.md](QUALITY_ITERATION_47.md)。此前dd42a70的[Linux CI](https://github.com/YoisakiKnd/searchan/actions/runs/39019028346)通过16任务双崩溃、恢复通知去重、安装回滚与双架构打包，受控峰值60.97MiB、零OOM；本轮远端数据按新提交另核对。完整质量及用户目标环境门槛未完成；以下为历史记录。
 
 RC.6 发布准备：包含自适应取证、本地 quality 测试、简单简介写作范围、正文边界及安全 JSON 诊断。本地完整检查通过，新增错误隐私/不重试用例另通过 model/quality race。四份原 HTML 边界检查通过，但第三轮真实模型五次尝试只有两次完成、三次失败，准确性与稳定性仍未通过；详见 [QUALITY_ITERATION_03.md](QUALITY_ITERATION_03.md) 与 [CHANGELOG.md](CHANGELOG.md)。Linux 包补齐公开题集及效果测试说明；私有配置、HTML/正文快照和 PNG 均不发布。远端构建状态以 Actions 为准。
 

@@ -278,7 +278,9 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 		// or contract before repeated examples. Headings affect rank only; all
 		// evidence remains a contiguous, unchanged slice of the fetched text.
 		if bestHeading > 0 {
-			items[i].score += .7 * bestBody * items[i].headingScore / bestHeading
+			// A generic matching heading must not borrow the strongest paragraph's
+			// relevance to outweigh this paragraph's own supporting text.
+			items[i].score += math.Min(scores[i], .7*bestBody*items[i].headingScore/bestHeading)
 		}
 		if items[i].opening {
 			// Give introductory openings at least the strongest body relevance.
