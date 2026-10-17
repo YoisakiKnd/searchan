@@ -171,6 +171,13 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 	hashes := map[string]bool{}
 	urls := map[string]bool{}
 	entities := relevanceEntities(plan)
+	var entityHeadingTerms map[string]bool
+	if !intro && plan.Intent != "compare" && len(plan.Queries) > 0 && len(entities) > 0 && identifierTopicQuery(plan.Queries[0]) {
+		entityHeadingTerms = make(map[string]bool)
+		for _, entity := range entities {
+			scanTerms(spacedQuery(entity), func(term string) { entityHeadingTerms[term] = true })
+		}
+	}
 	for _, doc := range docs {
 		key := search.DocumentURL(doc.URL)
 		if key == "" || urls[key] || (doc.Hash != "" && hashes[doc.Hash]) {
@@ -199,7 +206,9 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 			if p.heading != "" {
 				hv := l.vector(p.heading, scratch)
 				for _, f := range hv.matches {
-					headingScore += l.terms[f.term].weight
+					if !docFocused || !entityHeadingTerms[l.terms[f.term].text] {
+						headingScore += l.terms[f.term].weight
+					}
 				}
 				headingScore /= math.Sqrt(float64(max(1, hv.length)))
 			}
@@ -340,4 +349,21 @@ func SelectEvidenceForPlan(plan Plan, docs []reader.Document, published map[stri
 		out = append(out, ev)
 	}
 	return out
+}
+
+// Literal lower-camel symbols provide a narrower API topic than a
+// capitalized project name. Do not apply entity-heading discount to role or
+// overview questions, where the project/module name is itself the topic.
+func identifierTopicQuery(query string) bool {
+	for _, word := range strings.FieldsFunc(query, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_')
+	}) {
+		if len(word) == 0 {
+			continue
+		}
+		if word[0] >= 'a' && word[0] <= 'z' && len(camelWords(word)) > 1 {
+			return true
+		}
+	}
+	return false
 }

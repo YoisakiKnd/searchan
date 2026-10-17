@@ -62,6 +62,38 @@ func TestInvalidOutlineKeepsLegacySplit(t *testing.T) {
 	}
 }
 
+func TestAPIQueryRetainsSpecificContractWithProjectHeavyHeadings(t *testing.T) {
+	contract := "The loadBy query validates the entity property and translates the predicate; an unknown property cannot define a valid query."
+	text := "Vector Store Query Methods\n\nVector Store exposes various query methods through its repository API.\n\nUsing Vector Store Named Queries\n\n" + strings.Repeat("Vector Store named queries belong to Vector Store repository configuration. ", 25) + "\n\nQuery Creation\n\n" + contract + "\n\nVector Store Query Sorting\n\n" + strings.Repeat("Vector Store query sorting uses Vector Store sort configuration. ", 25)
+	doc := outlinedFixture(text, "Vector Store Query Methods", "Using Vector Store Named Queries", "Query Creation", "Vector Store Query Sorting")
+	doc.Title = "Vector Store Query Methods"
+	plan := Plan{Intent: "howto", Queries: []string{"Vector Store loadBy 查询原理", "Vector Store derived query method creation mechanism"}, Aspects: []string{"查询生成过程"}}
+	ev := SelectEvidenceForPlan(plan, []reader.Document{doc}, nil, 3)
+	found := false
+	for _, item := range ev {
+		if !strings.Contains(doc.Text, item.Text) || item.DocumentHash != doc.Hash {
+			t.Fatal("heading adjustment changed the original passage", item)
+		}
+		found = found || strings.Contains(item.Text, contract)
+	}
+	if !found {
+		t.Fatal("project-heavy headings displaced API contract", ev)
+	}
+}
+
+func TestIdentifierHeadingScopeUsesLiteralLowerCamelCase(t *testing.T) {
+	for _, query := range []string{"Vector Store loadBy 查询原理", "readNext() returns what?", "怎样使用 parseHTTPResponse？"} {
+		if !identifierTopicQuery(query) {
+			t.Fatal("literal lower-camel symbol was missed", query)
+		}
+	}
+	for _, query := range []string{"Vector Store Commons 负责什么？", "SpringData简介", "PostgreSQL Serializable 原理", "最新 1.2.3 版本", "Go context.Value 是否传参数？"} {
+		if identifierTopicQuery(query) {
+			t.Fatal("project, version or plain topic entered identifier heading mode", query)
+		}
+	}
+}
+
 func TestGeneratedOverviewDoesNotDisplaceArticleBody(t *testing.T) {
 	prefix := "Vector Store query internals\n\n"
 	widget := "AI Summary\n\n" + strings.Repeat("Vector Store query parser uses InventedClause. ", 12) + "\n\n"

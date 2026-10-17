@@ -2,6 +2,7 @@ package research
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -155,5 +156,114 @@ func TestReferenceEntitiesKeepAliasesAndComparisonSubjects(t *testing.T) {
 	plan = Plan{Intent: "compare", Queries: []string{"Vector Store Commons 和 Vector Store 有什么区别？"}}
 	if len(referenceEntities(plan)) != len(relevanceEntities(plan)) {
 		t.Fatal("comparison subject was removed")
+	}
+}
+
+func TestSearchReferenceUsesOnlyTopicalActualQueryLeaders(t *testing.T) {
+	plan := Plan{Queries: []string{"Vector Store Commons retry contract"}}
+	lead := hit{Result: search.Result{URL: "https://vendor.example/reference/commons/retry", Title: "Vector Store Commons retry contract"}, queryRanks: map[string]int{queryKey(plan.Queries[0]): 1}}
+	for _, mode := range []string{"read", "attempted", "already_read", "third_result", "entity_only", "unrelated", "private", "hostname_only", "path_prefix"} {
+		t.Run(mode, func(t *testing.T) {
+			h := lead
+			h.queryRanks = map[string]int{queryKey(plan.Queries[0]): 1}
+			attempted := map[string]bool{}
+			var docs []reader.Document
+			switch mode {
+			case "attempted":
+				attempted[h.URL] = true
+			case "already_read":
+				docs = []reader.Document{reader.MakeDocument(h.URL, h.Title, "Vector Store Commons retry requires the entire transaction.", "fixture")}
+			case "third_result":
+				h.queryRanks[queryKey(plan.Queries[0])] = 3
+			case "entity_only":
+				h.Title, h.URL = "Vector Store Commons", "https://vendor.example/reference/vector-store-commons"
+			case "unrelated":
+				h.Title, h.URL = "Vector Store JPA retry contract", "https://vendor.example/reference/jpa/retry"
+			case "private":
+				h.URL = "http://127.0.0.1/reference/commons/retry"
+			case "hostname_only":
+				h.URL = "https://docs.example/vector-store-commons/retry"
+			case "path_prefix":
+				h.URL = "https://vendor.example/referencestore/commons/retry"
+			}
+			hits := []hit{{Result: search.Result{URL: "https://article.example/first", Title: "Community"}, queryRanks: map[string]int{queryKey(plan.Queries[0]): 1}}, {Result: search.Result{URL: "https://article.example/second", Title: "Community"}, queryRanks: map[string]int{queryKey(plan.Queries[0]): 2}}, h}
+			got := searchReference(plan, hits, docs, attempted)
+			if mode == "read" {
+				if got.URL != lead.URL {
+					t.Fatal("topical actual reference was not selected", got)
+				}
+			} else if got.URL != "" {
+				t.Fatal("ineligible reference introduced a prefetch", mode, got)
+			}
+		})
+	}
+}
+
+func TestSearchReferenceSharesDiscoverySlotAndCannotRecurse(t *testing.T) {
+	for _, mode := range []string{"search", "body_link", "full", "cancelled"} {
+		t.Run(mode, func(t *testing.T) {
+			var visits []string
+			e, _ := New(Config{Providers: []search.Provider{provider{"fixture", nil}}, Reader: readFunc(func(_ context.Context, raw string) (reader.Document, error) {
+				visits = append(visits, raw)
+				d := reader.MakeDocument(raw, "Atlas retry contract", "Atlas retry requires restarting the complete transaction after a serialization conflict.", "fixture")
+				d.Links = []reader.Link{{URL: "https://next.example/atlas/retry", Text: "Atlas retry reference"}}
+				return d, nil
+			})})
+			out := Output{Plan: Plan{Queries: []string{"Atlas retry contract"}}, Stats: Stats{PagesRead: 3, ModelCalls: 2}}
+			g := newGathering(e, &out)
+			g.retrieval.hits = []hit{{Result: search.Result{URL: "https://vendor.example/reference/atlas/retry", Title: "Atlas retry contract"}, queryRanks: map[string]int{queryKey(out.Plan.Queries[0]): 1}}}
+			if mode == "body_link" {
+				d := reader.MakeDocument("https://article.example/atlas", "Atlas retry", "Atlas retry uses the contract in the linked reference.", "fixture")
+				d.Links = []reader.Link{{URL: "https://linked.example/atlas/retry", Text: "Atlas retry reference"}}
+				g.reading.docs = []reader.Document{d}
+			}
+			ctx, stop := context.WithCancel(context.Background())
+			defer stop()
+			limit := 4
+			if mode == "full" {
+				limit = 3
+			}
+			if mode == "cancelled" {
+				stop()
+			}
+			g.readRelevantReference(ctx, limit)
+			g.readRelevantReference(context.Background(), 8)
+			want := 1
+			if mode == "full" || mode == "cancelled" {
+				want = 0
+			}
+			if len(visits) != want || out.Stats.PagesRead != 3+want || out.Stats.ModelCalls != 2 || out.Stats.DiscoveryReads != want {
+				t.Fatalf("search discovery bypassed existing budget: visits=%v stats=%+v", visits, out.Stats)
+			}
+			if mode == "body_link" && visits[0] != "https://linked.example/atlas/retry" {
+				t.Fatal("search lead displaced explicit body reference", visits)
+			}
+		})
+	}
+}
+
+func BenchmarkSearchReference(b *testing.B) {
+	for _, reference := range []bool{false, true} {
+		b.Run(fmt.Sprintf("reference=%t", reference), func(b *testing.B) {
+			plan := Plan{Queries: []string{"Vector Store Commons retry contract", "Vector Store Commons transaction retry", "Vector Store Commons retry specification"}}
+			var hits []hit
+			for qi, q := range plan.Queries {
+				for rank := 1; rank <= 30; rank++ {
+					h := hit{Result: search.Result{URL: fmt.Sprintf("https://article.example/%d/%d", qi, rank), Title: "Vector Store Commons retry tutorial"}, queryRanks: map[string]int{queryKey(q): rank}}
+					if reference && qi == 2 && rank == 1 {
+						h.URL, h.Title = "https://vendor.example/reference/commons/retry", "Vector Store Commons retry contract"
+					}
+					hits = append(hits, h)
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				got := searchReference(plan, hits, nil, nil)
+				if (got.URL != "") != reference {
+					b.Fatal("unexpected search-reference selection")
+				}
+			}
+		})
 	}
 }

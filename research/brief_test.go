@@ -14,13 +14,14 @@ func TestBriefLayoutIsRegeneratedOnceFromEvidence(t *testing.T) {
 		`{"title":"Brief","lead":{"text":"` + strings.Repeat("字", 301) + `","evidence_ids":["e1"]}}`,
 		`{"title":"Brief","lead":{"text":"Fact","evidence_ids":["e1"]},"sections":[{"heading":"Extra","claims":[{"text":"Fact","evidence_ids":["e1"]}]}]}`,
 		`{"title":"Brief","lead":{"text":"Fact","evidence_ids":["e1"]},"table":{"columns":["A","B"],"rows":[{"cells":["A","B"],"evidence_ids":["e1"]}]}}`,
+		`{"title":"Brief","lead":{"text":"Fact","evidence_ids":["e1"]},"sections":[],"uncertainties":["An uncited stronger condition must never pass here."]}`,
 	} {
 		ps, r := fixtures()
 		calls := 0
 		lm := modelFunc(func(_ context.Context, prompt string, in, output any) error {
 			calls++
 			input := in.(map[string]any)
-			if input["evidence"] == nil || input["reason"] != "snippets_only" || input["brief_limits"].(map[string]any)["model_max_chars"] != 300-utf8.RuneCountInString("Notice") {
+			if input["evidence"] == nil || input["reason"] != "snippets_only" || input["brief_limits"].(map[string]any)["model_max_chars"] != 300-utf8.RuneCountInString("Notice") || input["brief_limits"].(map[string]any)["max_uncertainties"] != 0 {
 				t.Fatal("evidence or reserved notice budget missing")
 			}
 			if calls == 1 {
@@ -40,6 +41,24 @@ func TestBriefLayoutIsRegeneratedOnceFromEvidence(t *testing.T) {
 		if err != nil || calls != 2 || out.Stats.ModelCalls != 2 || out.Stats.AnswerRepairs != 1 || out.AnswerMode != "brief_summary" || out.AnswerReason != "snippets_only" || out.Answer.Uncertainties[0] != "Notice" {
 			t.Fatalf("layout did not recover: %+v calls=%d err=%v", out, calls, err)
 		}
+	}
+}
+
+func TestBriefCannotPublishUncitedConditionsAfterOneFreshRepair(t *testing.T) {
+	ps, r := fixtures()
+	calls := 0
+	m := modelFunc(func(_ context.Context, _ string, in, output any) error {
+		calls++
+		if fields := in.(map[string]any); fields["previous_answer"] != nil {
+			t.Fatal("unsupported brief used as repair evidence")
+		}
+		return assign(output, `{"title":"Brief","lead":{"text":"Atlas signals cancellation.","evidence_ids":["e1"]},"sections":[],"uncertainties":["SECRET_UNCITED_CONDITION"]}`)
+	})
+	e, _ := New(Config{Providers: ps, Reader: r, Model: m})
+	out := Output{Evidence: []Evidence{{ID: "e1", Text: "Atlas signals cancellation."}}}
+	err := e.briefSummary(context.Background(), &out, map[string]any{"evidence": out.Evidence}, "verification_failed", "Notice")
+	if !errors.Is(err, ErrAnswerValidation) || calls != 2 || out.Stats.AnswerRepairs != 1 || out.Answer.Title != "" || len(out.Sources) != 0 || strings.Contains(err.Error(), "SECRET_UNCITED_CONDITION") {
+		t.Fatalf("uncited brief condition was salvaged or retried indefinitely: output=%+v calls=%d err=%v", out, calls, err)
 	}
 }
 

@@ -2,6 +2,7 @@ package research
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -13,7 +14,9 @@ import (
 // Read one explicit, query-related reference before asking a model whether
 // existing tutorials are sufficient. A model can otherwise skip the very page
 // needed to check them. This is discovery, not a declaration of source trust.
-// Only links in already-read bodies are eligible, and no second hop is taken.
+// Prefer links in already-read bodies. Otherwise consider only the first two
+// actual search results per query that look like a topical reference. Neither
+// path labels nor search rank authenticate a publisher; no second hop is taken.
 func (g *gathering) readRelevantReference(ctx context.Context, pageLimit int) {
 	if g.referencesChecked {
 		return
@@ -65,12 +68,98 @@ func (g *gathering) readRelevantReference(ctx context.Context, pageLimit int) {
 		}
 	}
 	if best.URL == "" {
-		return
+		best = searchReference(g.out.Plan, g.retrieval.hits, g.reading.docs, g.reading.attempted)
+		if best.URL == "" {
+			return
+		}
 	}
 	before := g.out.Stats.PagesRead
 	g.out.Warnings = append(g.out.Warnings, g.reading.read(ctx, g.out.Plan, []hit{best}, 1)...)
 	g.out.Stats.DiscoveryReads += g.out.Stats.PagesRead - before
 	g.out.Evidence = SelectEvidenceForPlan(g.out.Plan, g.reading.docs, g.reading.published, g.engine.cfg.MaxEvidence)
+}
+
+// searchReference fills the same single discovery-read slot, not a separate
+// stage. It cannot introduce a URL absent from the actual provider results.
+func searchReference(plan Plan, hits []hit, docs []reader.Document, attempted map[string]bool) hit {
+	if len(plan.Queries) == 0 {
+		return hit{}
+	}
+	entities := referenceEntities(plan)
+	var entityTerms map[string]bool
+	var l *lexical
+	var scratch []uint16
+	score := func(title, raw string) float64 {
+		if !referencePage(title, raw) || !matchesEntities(title+" "+raw, entities) {
+			return 0
+		}
+		if l == nil {
+			entityTerms = make(map[string]bool)
+			for _, entity := range entities {
+				scanTerms(spacedQuery(entity), func(term string) { entityTerms[term] = true })
+			}
+			l = newLexical(strings.Join(plan.Queries[:min(3, len(plan.Queries))], " "), plan.Aspects, nil)
+			scratch = make([]uint16, len(l.terms))
+		}
+		address := strings.TrimPrefix(strings.TrimPrefix(raw, "https://"), "http://")
+		v := l.vector(strings.ToLower(title+" "+address), scratch)
+		matched, topic, weight := 0, false, 0.0
+		for _, f := range v.matches {
+			term := l.terms[f.term]
+			if substantiveReferenceTerm(term.text) {
+				matched++
+				weight += term.weight
+				topic = topic || !entityTerms[term.text]
+			}
+		}
+		if matched < 2 || !topic {
+			return 0
+		}
+		return weight
+	}
+	// Avoid another search-prefetch when a matching reference is already read.
+	// Explicit body links above can still refine a reference within the one slot.
+	for _, doc := range docs {
+		if score(reader.Clip(doc.Title, 200), doc.URL) > 0 {
+			return hit{}
+		}
+	}
+	seen := map[string]bool{}
+	var best hit
+	bestScore := 0.0
+	for _, q := range plan.Queries[:min(3, len(plan.Queries))] {
+		for _, h := range queryLeaders(hits, queryKey(q)) {
+			key := search.DocumentURL(h.URL)
+			if key == "" || len(key) > 2048 || seen[key] || attempted[key] || reader.ValidateURL(key) != nil {
+				continue
+			}
+			seen[key] = true
+			if weight := score(reader.Clip(h.Title, 200), key); weight > bestScore {
+				bestScore, best = weight, h
+				best.URL, best.pageKey = key, key
+			}
+		}
+	}
+	return best
+}
+
+func referencePage(title, raw string) bool {
+	if referenceLabel(title) {
+		return true
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	// Inspect path components, never a hostname containing "docs". A reference
+	// path is a discovery clue only; its body still needs reading and selection.
+	for _, component := range strings.Split(strings.ToLower(u.Path), "/") {
+		switch component {
+		case "reference", "api", "docs", "documentation", "manual", "specification", "spec", "rfc":
+			return true
+		}
+	}
+	return false
 }
 
 // "Child Module in Parent Project" names a specific module and its surrounding
