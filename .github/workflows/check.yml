@@ -74,6 +74,20 @@ jobs:
           sudo bash scripts/install-linux.sh --rollback ci-v1 --start
           sudo /opt/searchan/bin/searchan-admin healthcheck
           sudo systemctl stop searchan
+      - name: Native service load, resource limits and ambiguous-send recovery
+        run: |
+          set +e
+          sudo env GITHUB_ACTIONS=true python3 scripts/service-smoke.py --systemd --out "$PWD/artifacts/service-smoke"
+          task_smoke_status=$?
+          sudo chown -R "$(id -u):$(id -g)" artifacts/service-smoke
+          exit "$task_smoke_status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-service-smoke
+          path: artifacts/service-smoke/
+          if-no-files-found: warn
+          retention-days: 7
       - name: Show service diagnostics on failure
         if: failure()
         run: sudo journalctl -u searchan -n 100 --no-pager
