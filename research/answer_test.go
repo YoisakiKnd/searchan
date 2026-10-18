@@ -2,11 +2,14 @@ package research
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"searchan/model"
 	"searchan/reader"
 	"searchan/search"
 )
@@ -92,13 +95,13 @@ func TestVerificationFallbackUsesFreshBriefSummary(t *testing.T) {
 func TestInvalidBriefSummaryFailsWithoutPublishingOriginal(t *testing.T) {
 	for _, invalid := range []string{
 		`{"title":"Brief","lead":{"text":"Fact","evidence_ids":["invented"]}}`,
-		`{"title":"Brief","lead":{"text":"Fact","evidence_ids":["e1"]},"sections":[{"heading":"Long","claims":[]}]}`,
+		`{"title":"Brief","lead":{"text":"Fact","evidence_ids":["e1"]},"sections":[{"heading":"Long","claims":[{"text":"More","evidence_ids":["e1"]}]}]}`,
 		`{"title":"Brief","lead":{"text":"` + strings.Repeat("字", 301) + `","evidence_ids":["e1"]}}`,
 		`not json`,
 	} {
 		ps, r := fixtures()
 		lm := modelFunc(func(_ context.Context, prompt string, _ any, output any) error {
-			switch prompt {
+			switch strings.TrimSuffix(prompt, outputRetryPrompt) {
 			case verifyPrompt:
 				return assign(output, `{"unsupported":["bad assertion"],"missing":[]}`)
 			case briefPrompt, briefRepairPrompt:
@@ -147,5 +150,100 @@ func TestVerificationTimeoutLeavesBudgetForBriefSummary(t *testing.T) {
 	out, err := e.Run(ctx, "Go context")
 	if err != nil || out.AnswerReason != "verification_unavailable" || out.Stats.ModelCalls != 3 {
 		t.Fatalf("short summary budget consumed: %+v %v", out, err)
+	}
+}
+
+func TestNormalizeAnswerKeepsOnlyCitedContent(t *testing.T) {
+	ev := []Evidence{{ID: "e1"}, {ID: "e2"}}
+	a := Answer{
+		Title: " Go context ",
+		Lead:  Claim{"Direct answer.", []string{"1", "[E2]", "e9", "e1"}},
+		Sections: []Section{
+			{Heading: "Kept", Claims: []Claim{{"Cited.", []string{"e2"}}, {"Uncited.", nil}, {"Invented.", []string{"x"}}}},
+			{Heading: "Empty", Claims: []Claim{{"Uncited.", nil}}},
+		},
+		Table:         &Table{Columns: []string{"A", "B"}, Rows: []TableRow{{Cells: []string{"a", "b"}}, {Cells: []string{"short"}, EvidenceIDs: []string{"e1"}}}},
+		Uncertainties: []string{" ", "Gap"},
+	}
+	for i := 0; i < 8; i++ {
+		a.Sections = append(a.Sections, Section{Heading: "Extra", Claims: []Claim{{"More.", []string{"e1"}}}})
+	}
+	normalizeAnswer(&a, ev)
+	if a.Title != "Go context" || strings.Join(a.Lead.EvidenceIDs, ",") != "e1,e2" || len(a.Sections) != 6 || a.Sections[0].Heading != "Kept" || len(a.Sections[0].Claims) != 1 || a.Table != nil || len(a.Uncertainties) != 1 {
+		t.Fatalf("unexpected normalization: %+v", a)
+	}
+	if err := ValidateAnswer(a, ev); err != nil {
+		t.Fatal(err)
+	}
+	uncited := Answer{Title: "T", Lead: Claim{"Lead.", []string{"invented"}}}
+	normalizeAnswer(&uncited, ev)
+	if ValidateAnswer(uncited, ev) == nil {
+		t.Fatal("uncited lead accepted")
+	}
+}
+
+func TestMalformedAnswerRegeneratesOnceFromSameEvidence(t *testing.T) {
+	for _, first := range []string{"not json", `{"title":"Go","lead":{"text":"Fact","evidence_ids":["invented"]}}`} {
+		ps, r := fixtures()
+		answers := 0
+		lm := modelFunc(func(_ context.Context, prompt string, in any, output any) error {
+			if strings.HasPrefix(prompt, answerPrompt) {
+				answers++
+				if answers == 1 {
+					if first == "not json" {
+						return &model.OutputError{}
+					}
+					return assign(output, first)
+				}
+				if prompt != answerPrompt+outputRetryPrompt {
+					t.Fatal("regeneration missing correction prompt")
+				}
+			}
+			return fixtureModel().Complete(context.Background(), strings.TrimSuffix(prompt, outputRetryPrompt), in, output)
+		})
+		e, _ := New(Config{Providers: ps, Reader: r, Model: lm})
+		out, err := e.Run(context.Background(), "Go context cancellation")
+		if err != nil || answers != 2 || out.Stats.OutputRetries != 1 || out.AnswerMode != "summary" || len(out.Sources) == 0 {
+			t.Fatalf("malformed answer not regenerated: %+v %v", out.Stats, err)
+		}
+	}
+}
+
+func TestNormalizeAnswerCapsTotalClaims(t *testing.T) {
+	ev := []Evidence{{ID: "e1"}}
+	a := Answer{Title: "T", Lead: Claim{"Lead.", []string{"e1"}}}
+	for i := 0; i < 3; i++ {
+		s := Section{Heading: fmt.Sprint(i)}
+		for j := 0; j < 6; j++ {
+			s.Claims = append(s.Claims, Claim{fmt.Sprint(i, j), []string{"e1"}})
+		}
+		a.Sections = append(a.Sections, s)
+	}
+	normalizeAnswer(&a, ev)
+	if len(a.Sections) != 2 || len(a.Sections[0].Claims) != 6 || len(a.Sections[1].Claims) != maxClaims-6 {
+		t.Fatalf("claims not capped in order: %+v", a.Sections)
+	}
+}
+
+func TestAnswerAcceptsCommonCitationShapes(t *testing.T) {
+	var a Answer
+	err := json.Unmarshal([]byte(`{"title":"T","lead":{"text":"Lead.","evidence_ids":"e1"},"sections":[{"heading":"H","claims":["bare claim",{"text":"Cited.","evidence_ids":"1"}]}],"table":{"columns":["A","B"],"rows":[{"cells":["a","b"],"evidence_ids":"e1"}]}}`), &a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := []Evidence{{ID: "e1"}}
+	normalizeAnswer(&a, ev)
+	if err := ValidateAnswer(a, ev); err != nil || len(a.Sections[0].Claims) != 1 || a.Sections[0].Claims[0].EvidenceIDs[0] != "e1" || a.Table == nil {
+		t.Fatalf("citation shapes not accepted: %+v %v", a, err)
+	}
+	var bare Answer
+	if err := json.Unmarshal([]byte(`{"title":"T","lead":"uncited lead"}`), &bare); err != nil {
+		t.Fatal(err)
+	}
+	if normalizeAnswer(&bare, ev); ValidateAnswer(bare, ev) == nil {
+		t.Fatal("bare uncited lead accepted")
+	}
+	if json.Unmarshal([]byte(`{"lead":{"text":"x","evidence_ids":42}}`), &bare) == nil {
+		t.Fatal("invalid citation type accepted")
 	}
 }

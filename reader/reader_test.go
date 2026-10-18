@@ -201,3 +201,22 @@ func TestFreshReadDoesNotUseNormalTTL(t *testing.T) {
 		t.Fatal("freshness cap not respected")
 	}
 }
+
+func TestHTTPReaderClassifiesScriptChallenges(t *testing.T) {
+	for _, tt := range []struct {
+		body string
+		want ContentError
+	}{
+		{`<script>document.cookie='token=1; path=/';window.location.href='/faq/1.html'</script>`, "script_challenge"},
+		{`<html><head><title>App</title></head><body><div id="app"></div>` + strings.Repeat(`<script src="/x.js"></script>`, 400) + `</body></html>`, "empty_text"},
+	} {
+		client := &http.Client{Transport: roundTripper(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/html"}}, Body: io.NopCloser(strings.NewReader(tt.body)), Request: r}, nil
+		})}
+		_, err := NewHTTP(client).Read(context.Background(), "https://example.org/page")
+		var got ContentError
+		if !errors.As(err, &got) || got != tt.want {
+			t.Fatalf("got %v, want %s", err, tt.want)
+		}
+	}
+}

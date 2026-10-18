@@ -54,7 +54,8 @@ func TestBriefInvalidCitationsNeverEnterLayoutRepair(t *testing.T) {
 		e, _ := New(Config{Providers: ps, Reader: r, Model: lm})
 		out := Output{Evidence: []Evidence{{ID: "e1"}}}
 		err := e.briefSummary(context.Background(), &out, map[string]any{}, "snippets_only", "Notice")
-		if !errors.Is(err, ErrAnswerValidation) || calls != 1 || out.Stats.AnswerRepairs != 0 || out.Answer.Title != "" {
+		// One regeneration for malformed citations, never the layout repair path.
+		if !errors.Is(err, ErrAnswerValidation) || calls != 2 || out.Stats.OutputRetries != 1 || out.Stats.AnswerRepairs != 0 || out.Answer.Title != "" {
 			t.Fatalf("invalid citations were repaired/published: %+v calls=%d err=%v", out, calls, err)
 		}
 	}

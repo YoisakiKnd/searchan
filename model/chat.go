@@ -88,9 +88,5 @@ func (c *Client) Complete(ctx context.Context, system string, input, out any) er
 	if err != nil {
 		return err
 	}
-	content = strings.TrimSpace(content)
-	if strings.HasPrefix(content, "```json") && strings.HasSuffix(content, "```") {
-		content = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(content, "```json"), "```"))
-	}
-	return decodeOutput(content, out)
+	return decodeOutput(strings.TrimSpace(content), out)
 }

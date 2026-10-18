@@ -275,5 +275,5 @@ func (q *QQ) DecodeWebhook(r *http.Request) (Event, any, error) {
 	if msg.ID == "" || chat == "" {
 		return Event{}, nil, fmt.Errorf("QQ event missing message identity")
 	}
-	return Event{ID: "qq:" + msg.ID, Text: msg.Content, Target: Target{Platform: "qq", Scope: scope, ChatID: chat, UserID: user, MessageID: msg.ID}}, ack, nil
+	return Event{ID: "qq:" + msg.ID, Text: msg.Content, Addressed: payload.Type != "GROUP_MESSAGE_CREATE", Target: Target{Platform: "qq", Scope: scope, ChatID: chat, UserID: user, MessageID: msg.ID}}, ack, nil
 }

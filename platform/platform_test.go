@@ -55,8 +55,13 @@ func TestTelegramStreamAndWebhook(t *testing.T) {
 	req := httptest.NewRequest("POST", "/", strings.NewReader(`{"update_id":11,"message":{"message_id":1,"message_thread_id":5,"text":"/search Go","from":{"id":2},"chat":{"id":123}}}`))
 	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "webhook")
 	event, err := bot.DecodeWebhook(req)
-	if err != nil || event.Target.ThreadID != 5 || event.ID != "telegram:11" {
+	if err != nil || event.Target.ThreadID != 5 || event.ID != "telegram:11" || event.Addressed {
 		t.Fatalf("bad webhook: %+v %v", event, err)
+	}
+	req = httptest.NewRequest("POST", "/", strings.NewReader(`{"update_id":12,"message":{"message_id":2,"text":"Go context","from":{"id":2},"chat":{"id":2,"type":"private"}}}`))
+	req.Header.Set("X-Telegram-Bot-Api-Secret-Token", "webhook")
+	if event, err := bot.DecodeWebhook(req); err != nil || !event.Addressed {
+		t.Fatalf("private chat not addressed: %+v %v", event, err)
 	}
 	req = httptest.NewRequest("POST", "/", strings.NewReader(`{}`))
 	if _, err := bot.DecodeWebhook(req); err == nil {

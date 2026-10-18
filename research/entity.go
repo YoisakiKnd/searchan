@@ -61,6 +61,50 @@ func spacedQuery(query string) string {
 	return strings.Join(strings.Fields(b.String()), " ")
 }
 
+// searchVariant returns the query with run-together capitalized words split
+// (SpringData简介 → Spring Data 简介), or "" when nothing qualifies. Acronym
+// endings (PostgreSQL, MongoDB) and identifiers next to '.', '_', '-', '/' or
+// digits (context.WithTimeout) are left alone: splitting them only wastes one
+// of the few search calls on a near-duplicate or misspelled query.
+func searchVariant(query string) string {
+	var b strings.Builder
+	changed := false
+	identifier := func(c byte) bool { return c == '.' || c == '_' || c == '-' || c == '/' || c >= '0' && c <= '9' }
+	for i := 0; i < len(query); {
+		if !asciiUpper(query[i]) && !asciiLower(query[i]) {
+			b.WriteByte(query[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(query) && (asciiUpper(query[j]) || asciiLower(query[j])) {
+			j++
+		}
+		word, parts := query[i:j], camelWords(query[i:j])
+		split := len(parts) > 1 && (i == 0 || !identifier(query[i-1])) && (j == len(query) || !identifier(query[j]))
+		for _, p := range parts {
+			if len(p) < 2 || !asciiUpper(p[0]) || strings.ToLower(p[1:]) != p[1:] {
+				split = false
+			}
+		}
+		if split {
+			word, changed = strings.Join(parts, " "), true
+			if i > 0 && query[i-1] != ' ' {
+				word = " " + word
+			}
+			if j < len(query) && query[j] != ' ' {
+				word += " "
+			}
+		}
+		b.WriteString(word)
+		i = j
+	}
+	if !changed {
+		return ""
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
 // Only strong, explicit compound names constrain evidence. Expansions never
 // get to redefine the user's entity. This is a relevance check, not fact checking.
 func queryEntities(query string) []string {

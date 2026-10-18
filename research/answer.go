@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"searchan/model"
 	"searchan/reader"
 )
 
@@ -46,7 +47,12 @@ reason=verification_failed 时删除不受支持的数字、版本、时间、�
 const briefRepairPrompt = briefPrompt + `
 上次生成未满足短总结布局要求，具体原因见 brief_correction。请重新根据 evidence 生成更短的单段总结，目标合计120–160个字符，不能增加新的事实。不得生成 sections 内容或 table，不要解释修正过程。`
 
-const maxModelCalls = 6 // Shared by all stages, including retrieval correction.
+// Shared by all stages, including retrieval correction and one regeneration
+// after malformed output.
+const maxModelCalls = 7
+
+const outputRetryPrompt = `
+上次输出无法使用（JSON 不完整、字段类型错误或引用了不存在的 evidence_ids）。这次只输出一个合法 JSON 对象，不加代码块或解释；evidence_ids 只能使用 evidence 中实际存在的 id（如 "e1"），没有资料支持的结论直接删除。`
 
 func (e *Engine) complete(ctx context.Context, out *Output, prompt string, input, result any) error {
 	if err := ctx.Err(); err != nil {
@@ -135,7 +141,23 @@ func (e *Engine) summarize(ctx context.Context, out *Output, recoverEvidence fun
 	return nil
 }
 
+// generate regenerates once from the same evidence when the model returns
+// unusable JSON or citations. Transport errors and timeouts are not repeated
+// here; the model client owns its single transport retry.
 func (e *Engine) generate(ctx context.Context, out *Output, prompt string, input any, reserve bool) (Answer, error) {
+	a, err := e.generateOnce(ctx, out, prompt, input, reserve)
+	var malformed *model.OutputError
+	if err == nil || (!errors.As(err, &malformed) && !errors.Is(err, ErrAnswerValidation)) || ctx.Err() != nil || out.Stats.ModelCalls >= maxModelCalls {
+		return a, err
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 5*time.Second {
+		return a, err
+	}
+	out.Stats.OutputRetries++
+	return e.generateOnce(ctx, out, prompt+outputRetryPrompt, input, reserve)
+}
+
+func (e *Engine) generateOnce(ctx context.Context, out *Output, prompt string, input any, reserve bool) (Answer, error) {
 	var a Answer
 	if err := ctx.Err(); err != nil {
 		return a, err
@@ -146,6 +168,7 @@ func (e *Engine) generate(ctx context.Context, out *Output, prompt string, input
 	if err != nil {
 		return Answer{}, fmt.Errorf("%w: %w", ErrAnswerGeneration, err)
 	}
+	normalizeAnswer(&a, out.Evidence)
 	if err := ValidateAnswer(a, out.Evidence); err != nil {
 		return Answer{}, fmt.Errorf("%w: %w", ErrAnswerValidation, err)
 	}

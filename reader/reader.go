@@ -169,6 +169,11 @@ func (r *HTTP) Read(ctx context.Context, raw string) (Document, error) {
 	if lr.N <= 0 {
 		return Document{}, errors.New("page exceeds 2 MiB")
 	}
+	// A tiny page without visible text is a script cookie/redirect challenge,
+	// not an empty article. Report it as such so callers can skip the site.
+	if strings.TrimSpace(text) == "" && MaxBody+1-lr.N < 8<<10 {
+		return Document{}, ContentError("script_challenge")
+	}
 	if err := CheckContent(title, text); err != nil {
 		return Document{}, err
 	}

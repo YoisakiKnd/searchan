@@ -141,8 +141,12 @@ func TestOneBotSignedEventsAndLiteralSegments(t *testing.T) {
 	q := &OneBot{SelfID: "12345", WebhookSecret: strings.Repeat("s", 32)}
 	body := `{"self_id":12345,"post_type":"message","message_type":"group","group_id":88,"user_id":"99","message_id":-11,"message":[{"type":"at","data":{"qq":"12345"}},{"type":"text","data":{"text":" /search SpringData简介"}}]}`
 	e, err := q.DecodeWebhook(signedOneBotRequest(q, body))
-	if err != nil || e.Target.ChatID != "88" || e.Target.UserID != "99" || e.Target.Scope != "group" || e.Text != "/search SpringData简介" {
+	if err != nil || e.Target.ChatID != "88" || e.Target.UserID != "99" || e.Target.Scope != "group" || e.Text != "/search SpringData简介" || !e.Addressed {
 		t.Fatalf("bad event %+v %v", e, err)
+	}
+	unmentioned := `{"self_id":12345,"post_type":"message","message_type":"group","group_id":88,"user_id":"99","message_id":-12,"message":[{"type":"text","data":{"text":"SpringData简介"}}]}`
+	if e, err := q.DecodeWebhook(signedOneBotRequest(q, unmentioned)); err != nil || e.Addressed {
+		t.Fatalf("unmentioned group message addressed: %+v %v", e, err)
 	}
 	req := signedOneBotRequest(q, body)
 	req.Header.Set("X-Signature", "sha1=00")

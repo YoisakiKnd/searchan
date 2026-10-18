@@ -338,7 +338,9 @@ func rankHits(plan Plan, hits []hit, attempted map[string]bool, limit int) []hit
 					novel++
 				}
 			}
-			score := c.score + focus + .12*float64(bits.OnesCount8(c.vector.mask&^covered)) + .08*float64(novel) - .1*float64(domains[c.domain])
+			// Pages of one site fail together (login walls, anti-bot checks) and
+			// add little independent support, so spread a batch across sites.
+			score := c.score + focus + .12*float64(bits.OnesCount8(c.vector.mask&^covered)) + .08*float64(novel) - .3*float64(domains[c.domain])
 			if score > value {
 				best, value = i, score
 			}

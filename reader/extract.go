@@ -166,6 +166,24 @@ func extract(r io.Reader) (string, string, bool, error) {
 					}
 				}
 			}
+			// Like browsers, ignore repeated document-level tags and let <body>
+			// close an unterminated <head>; otherwise a stray second <head>
+			// hides the whole page body.
+			if tag == "html" || tag == "head" || tag == "body" {
+				open := -1
+				for i, old := range stack {
+					if old.tag == tag || tag == "body" && old.tag == "head" {
+						open = i
+						break
+					}
+				}
+				if open >= 0 && stack[open].tag == tag {
+					continue
+				}
+				if open >= 0 {
+					pop(open)
+				}
+			}
 			// Common optional end tags must not grow an unbounded stack or leak
 			// pre/main state. Stop at the matching list/table scope for nested markup.
 			for i := len(stack) - 1; i >= 0; i-- {

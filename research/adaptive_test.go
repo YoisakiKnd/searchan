@@ -186,7 +186,7 @@ func TestLateAnswerGapRecoversOnceWithinSharedModelBudget(t *testing.T) {
 			out, err := e.Run(context.Background(), "Atlas introduction")
 			wantCalls, wantMode := 5, "summary"
 			if verifyFails {
-				wantCalls, wantMode = maxModelCalls, "brief_summary"
+				wantCalls, wantMode = 6, "brief_summary"
 			}
 			if err != nil || answers != 2 || out.Stats.RecoveryRounds != 1 || out.Stats.RecoveryTrigger != "answer_gap" || out.Stats.SearchCalls != 2 || out.Stats.ModelCalls != wantCalls || out.AnswerMode != wantMode || out.Stats.PagesRead > 8 {
 				t.Fatalf("late recovery failed: %+v %v", out.Stats, err)
@@ -206,7 +206,7 @@ func TestLateRecoverySkipsInsufficientBudgets(t *testing.T) {
 			gaps := []string{"repository definition"}
 			switch reason {
 			case "model":
-				out.Stats.ModelCalls = 4
+				out.Stats.ModelCalls = maxModelCalls - 2
 			case "time":
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithTimeout(ctx, time.Second)

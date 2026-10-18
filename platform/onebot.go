@@ -124,6 +124,7 @@ func (q *OneBot) DecodeWebhook(req *http.Request) (Event, error) {
 		return Event{}, nil
 	}
 	var text string
+	addressed := false
 	if len(wire.Message) > 0 && wire.Message[0] == '"' {
 		if err := json.Unmarshal(wire.Message, &text); err != nil {
 			return Event{}, errors.New("invalid OneBot text")
@@ -141,6 +142,7 @@ func (q *OneBot) DecodeWebhook(req *http.Request) (Event, error) {
 			return Event{}, errors.New("invalid OneBot message segments")
 		}
 		var b strings.Builder
+		mentioned := false
 		for _, s := range segments {
 			switch s.Type {
 			case "at":
@@ -154,6 +156,7 @@ func (q *OneBot) DecodeWebhook(req *http.Request) (Event, error) {
 				if err := id.UnmarshalJSON(data.QQ); err != nil || string(id) != q.SelfID {
 					return Event{}, nil
 				}
+				mentioned = true
 			case "text":
 				var data struct {
 					Text string `json:"text"`
@@ -165,8 +168,9 @@ func (q *OneBot) DecodeWebhook(req *http.Request) (Event, error) {
 			}
 		}
 		text = b.String()
+		addressed = mentioned
 	}
-	return Event{ID: "qq:onebot:" + q.SelfID + ":" + target.Scope + ":" + target.ChatID + ":" + target.MessageID, Target: target, Text: strings.TrimSpace(text)}, nil
+	return Event{ID: "qq:onebot:" + q.SelfID + ":" + target.Scope + ":" + target.ChatID + ":" + target.MessageID, Target: target, Text: strings.TrimSpace(text), Addressed: addressed || target.Scope == "c2c"}, nil
 }
 
 func (q *OneBot) send(ctx context.Context, method string, body io.Reader, length int64) (Receipt, error) {

@@ -109,3 +109,19 @@ func TestNonAnswerDoesNotBecomeLongReport(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchVariantSplitsOnlyCapitalizedWords(t *testing.T) {
+	for query, want := range map[string]string{
+		"SpringData简介":                               "Spring Data 简介",
+		"SpringBoot 和 SpringData":                    "Spring Boot 和 Spring Data",
+		"PostgreSQL 默认事务隔离级别是什么？":                    "",
+		"Spring Data MongoDB 是什么？":                   "",
+		"Go 的 context.WithTimeout 用完为什么还要调用 cancel？": "",
+		"Redis简介": "",
+		"Go http.Client 请求完成后需要关闭 resp.Body 吗？": "",
+	} {
+		if got := searchVariant(query); got != want {
+			t.Errorf("searchVariant(%q) = %q, want %q", query, got, want)
+		}
+	}
+}

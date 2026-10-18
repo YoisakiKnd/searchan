@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -151,7 +152,7 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 	if event.ID == "" {
 		return nil
 	}
-	cmd, ok := platform.ParseCommand(event.Text)
+	cmd, ok := platform.ParseRequest(event)
 	if !ok {
 		return nil
 	}
@@ -164,8 +165,11 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 	}
 	switch cmd.Name {
 	case "search", "ask", "deep":
-		if cmd.Argument == "" || len(cmd.Argument) > 4096 {
-			return nil
+		if cmd.Argument == "" {
+			return s.reply(ctx, event, "请在命令后输入问题，例如：/"+cmd.Name+" Go context 如何取消并发任务？")
+		}
+		if len(cmd.Argument) > 4096 {
+			return s.reply(ctx, event, "问题过长，请缩短到 4096 字节以内后重试。")
 		}
 		// Bound the limiter map too. Updates are serialized with submissions so the
 		// queue's memory bound cannot be bypassed by concurrent webhook requests.
@@ -192,7 +196,14 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 			s.last[key] = now
 		}
 		s.mu.Unlock()
-		if err != nil {
+		// Quota and a full queue are answers for the user, not transient webhook
+		// failures: a 503 would make Telegram redeliver and stall later updates.
+		switch {
+		case errors.Is(err, task.ErrQuota):
+			return s.reply(ctx, event, "你已有进行中的搜索任务，请等待完成或使用 /cancel 任务ID 后再试。")
+		case errors.Is(err, task.ErrBusy):
+			return s.reply(ctx, event, "当前排队任务已满，请稍后再试。")
+		case err != nil:
 			return err
 		}
 		if created {
@@ -203,9 +214,12 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 		}
 		return nil
 	case "cancel", "status", "sources":
+		if cmd.Argument == "" {
+			return s.reply(ctx, event, "请附上任务ID，例如：/"+cmd.Name+" 任务ID")
+		}
 		rec, err := s.Store.Get(cmd.Argument)
 		if err != nil || !task.SameTarget(rec.Target, event.Target) {
-			return nil
+			return s.reply(ctx, event, "未找到该任务，请检查任务ID。")
 		}
 		text := "任务 " + rec.ID + "：" + rec.State
 		if cmd.Name == "cancel" {
@@ -226,7 +240,7 @@ func (s *Server) Accept(ctx context.Context, event platform.Event) error {
 		}
 		return s.reply(ctx, event, text)
 	case "start", "help":
-		return s.reply(ctx, event, "发送 /search 问题 开始搜索，/deep 问题 增加检索额度。\n/status 任务ID 查看状态，/sources 任务ID 查看来源，/cancel 任务ID 取消任务。\n搜索结果优先以图片发送，并附来源链接。")
+		return s.reply(ctx, event, "发送 /search 问题 开始搜索（私聊可直接发送问题），/deep 问题 增加检索额度。\n/status 任务ID 查看状态，/sources 任务ID 查看来源，/cancel 任务ID 取消任务。\n搜索结果优先以图片发送，并附来源链接。")
 	}
 	return nil
 }
@@ -402,7 +416,7 @@ func (s *Server) worker(ctx context.Context) {
 			slog.Error("task claim failed", "error", err)
 		}
 		if ok {
-			s.process(ctx, rec)
+			s.processSafely(ctx, rec)
 			s.active.Add(-1)
 			continue
 		}
@@ -413,6 +427,33 @@ func (s *Server) worker(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// processSafely keeps one faulty task from stopping the worker pool. A task
+// that panicked while sending has an unknown remote outcome and is not resent.
+func (s *Server) processSafely(ctx context.Context, rec task.Record) {
+	defer func() {
+		p := recover()
+		if p == nil {
+			return
+		}
+		slog.Error("task panicked", "task", rec.ID, "panic", fmt.Sprint(p), "stack", string(debug.Stack()))
+		current, err := s.Store.Get(rec.ID)
+		if err != nil {
+			return
+		}
+		switch current.State {
+		case "completed", "failed", "uncertain", "cancelled":
+			return
+		case "sending":
+			current.State = "uncertain"
+		default:
+			current.State = "failed"
+		}
+		current.Error = "internal error"
+		_ = s.Store.Save(current)
+	}()
+	s.process(ctx, rec)
 }
 
 func (s *Server) process(parent context.Context, rec task.Record) {

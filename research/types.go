@@ -2,6 +2,7 @@
 package research
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -40,10 +41,56 @@ type Section struct {
 	Heading string  `json:"heading"`
 	Claims  []Claim `json:"claims"`
 }
+
+// UnmarshalJSON accepts shapes models commonly emit for a claim: a bare string
+// (kept without citations, so normalization drops it and an uncited lead still
+// fails validation) and a single evidence ID instead of a list.
+func (c *Claim) UnmarshalJSON(data []byte) error {
+	var text string
+	if json.Unmarshal(data, &text) == nil {
+		*c = Claim{Text: text}
+		return nil
+	}
+	var wire struct {
+		Text        string          `json:"text"`
+		EvidenceIDs json.RawMessage `json:"evidence_ids"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*c = Claim{Text: wire.Text}
+	return citationIDs(wire.EvidenceIDs, &c.EvidenceIDs)
+}
+
+func citationIDs(raw json.RawMessage, ids *[]string) error {
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		*ids = []string{one}
+		return nil
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return json.Unmarshal(raw, ids)
+}
+
 type TableRow struct {
 	Cells       []string `json:"cells"`
 	EvidenceIDs []string `json:"evidence_ids"`
 }
+
+func (r *TableRow) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Cells       []string        `json:"cells"`
+		EvidenceIDs json.RawMessage `json:"evidence_ids"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*r = TableRow{Cells: wire.Cells}
+	return citationIDs(wire.EvidenceIDs, &r.EvidenceIDs)
+}
+
 type Table struct {
 	Columns []string   `json:"columns"`
 	Rows    []TableRow `json:"rows"`
@@ -86,6 +133,7 @@ type Stats struct {
 	PagesRead       int              `json:"pages_read"`
 	ModelCalls      int              `json:"model_calls"`
 	AnswerRepairs   int              `json:"answer_repairs,omitempty"`
+	OutputRetries   int              `json:"output_retries,omitempty"`
 	ElapsedMS       int64            `json:"elapsed_ms"`
 	StageMS         map[string]int64 `json:"stage_ms"`
 	Candidates      int              `json:"candidates"`
@@ -120,6 +168,75 @@ type SearchCall struct {
 	NewDocuments int    `json:"new_documents"`
 	ElapsedMS    int64  `json:"elapsed_ms"`
 	Error        string `json:"error,omitempty"`
+}
+
+// maxClaims bounds the image length; later claims are the least important.
+const maxClaims = 8
+
+// normalizeAnswer canonicalizes citation IDs and removes content the
+// renderer cannot show honestly: unknown citations, uncited supporting claims,
+// table rows without evidence and items beyond the layout limits. The lead is
+// left for ValidateAnswer so an answer without a cited direct reply still fails.
+func normalizeAnswer(a *Answer, ev []Evidence) {
+	known := map[string]bool{}
+	for _, e := range ev {
+		known[e.ID] = true
+	}
+	ids := func(raw []string) []string {
+		var kept []string
+		for _, id := range raw {
+			id = strings.ToLower(strings.Trim(strings.TrimSpace(id), "[]【】()（）"))
+			if id != "" && strings.Trim(id, "0123456789") == "" {
+				id = "e" + id
+			}
+			if known[id] && !contains(kept, id) && len(kept) < 8 {
+				kept = append(kept, id)
+			}
+		}
+		return kept
+	}
+	cited := func(c Claim) bool { return strings.TrimSpace(c.Text) != "" && (len(ev) == 0 || len(c.EvidenceIDs) > 0) }
+	total := 0 // supporting claims across sections; the prompt asks for at most 6
+	a.Title = strings.TrimSpace(a.Title)
+	a.Lead.EvidenceIDs = ids(a.Lead.EvidenceIDs)
+	sections := a.Sections[:0]
+	for _, s := range a.Sections {
+		claims := s.Claims[:0]
+		for _, c := range s.Claims {
+			c.EvidenceIDs = ids(c.EvidenceIDs)
+			if cited(c) && len(claims) < 6 && total < maxClaims {
+				claims = append(claims, c)
+				total++
+			}
+		}
+		if s.Claims = claims; len(claims) > 0 && len(sections) < 6 {
+			sections = append(sections, s)
+		}
+	}
+	a.Sections = sections
+	if t := a.Table; t != nil {
+		rows := t.Rows[:0]
+		for _, r := range t.Rows {
+			r.EvidenceIDs = ids(r.EvidenceIDs)
+			if len(r.Cells) == len(t.Columns) && cited(Claim{strings.Join(r.Cells, " "), r.EvidenceIDs}) && len(rows) < 8 {
+				rows = append(rows, r)
+			}
+		}
+		t.Rows = rows
+		if len(rows) == 0 || len(t.Columns) < 2 || len(t.Columns) > 4 {
+			a.Table = nil
+		}
+	}
+	uncertainties := a.Uncertainties[:0]
+	for _, u := range a.Uncertainties {
+		if u = strings.TrimSpace(u); u != "" && len(uncertainties) < 6 {
+			uncertainties = append(uncertainties, u)
+		}
+	}
+	a.Uncertainties = uncertainties
+	if len(a.Missing) > 4 {
+		a.Missing = a.Missing[:4]
+	}
 }
 
 func ValidateAnswer(a Answer, ev []Evidence) error {

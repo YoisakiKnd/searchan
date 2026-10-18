@@ -67,8 +67,8 @@ func TestIntroductionStillRejectsInvalidCitationsAndUsesBriefForSnippets(t *test
 		e, _ := New(Config{Providers: ps, Reader: r, Model: m, VerifyWithModel: true})
 		out := Output{Query: "Atlas简介", Evidence: []Evidence{{ID: "e1", Kind: kind, URL: "https://example.org/atlas", Text: "Atlas offers repository abstractions."}}}
 		err := e.summarize(context.Background(), &out, nil)
-		if calls != 1 {
-			t.Fatal("extra repair call introduced")
+		if want := map[string]int{"body": 2, "snippet": 1}[kind]; calls != want {
+			t.Fatal("unexpected regeneration count", calls)
 		}
 		if kind == "body" {
 			if !errors.Is(err, ErrAnswerValidation) || out.Answer.Title != "" {

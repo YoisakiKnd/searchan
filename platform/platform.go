@@ -28,6 +28,9 @@ type Event struct {
 	ID     string
 	Target Target
 	Text   string
+	// Addressed marks a private chat or an explicit mention of the bot, where
+	// plain text without a command is treated as a search request.
+	Addressed bool
 }
 type Receipt struct {
 	MessageID string `json:"message_id"`
@@ -63,15 +66,36 @@ func Definite(err error) bool {
 
 type Command struct{ Name, Argument string }
 
-func ParseCommand(text string) (Command, bool) {
+func stripMentions(text string) (string, bool) {
 	text = strings.TrimSpace(text)
 	// QQ @ markers precede command text in group events.
 	for strings.HasPrefix(text, "<@") {
 		i := strings.Index(text, ">")
 		if i < 0 {
-			return Command{}, false
+			return "", false
 		}
 		text = strings.TrimSpace(text[i+1:])
+	}
+	return text, true
+}
+
+// ParseRequest accepts commands everywhere and plain text only in addressed
+// messages. Unknown slash commands are never treated as searches.
+func ParseRequest(event Event) (Command, bool) {
+	if cmd, ok := ParseCommand(event.Text); ok || !event.Addressed {
+		return cmd, ok
+	}
+	text, ok := stripMentions(event.Text)
+	if !ok || text == "" || strings.HasPrefix(text, "/") {
+		return Command{}, false
+	}
+	return Command{"search", text}, true
+}
+
+func ParseCommand(text string) (Command, bool) {
+	text, ok := stripMentions(text)
+	if !ok {
+		return Command{}, false
 	}
 	fields := strings.Fields(text)
 	if len(fields) == 0 {

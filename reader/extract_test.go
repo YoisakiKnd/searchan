@@ -107,3 +107,17 @@ func TestExtractLargeDiscardedAssetsRemainBounded(t *testing.T) {
 		}
 	}
 }
+
+func TestExtractToleratesRepeatedOrUnclosedHead(t *testing.T) {
+	for _, page := range []string{
+		// Observed on a documentation mirror: a second <head> inside the first.
+		`<html><head><title>Docs</title><head><meta charset="utf-8"></head><body><main><article><p>Spring Data MongoDB 支持模板 API。</p></article></main></body></html>`,
+		`<html><head><title>Docs</title><body><main><p>Spring Data MongoDB 支持模板 API。</p></main></body></html>`,
+		`<html><head><title>Docs</title></head><body><body><p>Spring Data MongoDB 支持模板 API。</p></body></html>`,
+	} {
+		title, text, err := Extract(strings.NewReader(page))
+		if err != nil || title != "Docs" || text != "Spring Data MongoDB 支持模板 API。" {
+			t.Fatalf("body lost: %q %q %v", title, text, err)
+		}
+	}
+}

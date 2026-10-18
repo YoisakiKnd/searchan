@@ -205,7 +205,7 @@ func TestQueryCoverageAndReservedRecoveryPages(t *testing.T) {
 			lm := modelFunc(func(_ context.Context, prompt string, in, out any) error {
 				switch {
 				case prompt == briefPrompt && repair:
-					return assign(out, `{"title":"Brief","lead":{"text":"Context reference.","evidence_ids":["e1"]},"sections":[{"heading":"Extra","claims":[]}]}`)
+					return assign(out, `{"title":"Brief","lead":{"text":"Context reference.","evidence_ids":["e1"]},"sections":[{"heading":"Extra","claims":[{"text":"Extra detail.","evidence_ids":["e1"]}]}]}`)
 				case prompt == verifyPrompt:
 					return assign(out, `{"unsupported":["context reference needs qualification"],"missing":[]}`)
 				case strings.Contains(prompt, "制定网页搜索计划"):
@@ -237,7 +237,7 @@ func TestQueryCoverageAndReservedRecoveryPages(t *testing.T) {
 			}
 			wantCalls, wantRepairs := 5, 0
 			if repair {
-				wantCalls, wantRepairs = maxModelCalls, 1
+				wantCalls, wantRepairs = 6, 1
 			}
 			if out.Stats.ModelCalls != wantCalls || out.Stats.AnswerRepairs != wantRepairs || out.AnswerMode != "brief_summary" || out.AnswerReason != "verification_failed" {
 				t.Fatalf("unexpected model budget or fallback: %+v", out)

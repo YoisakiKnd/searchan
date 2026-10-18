@@ -16,7 +16,7 @@ func TestChatBoundedJSON(t *testing.T) {
 		wantErr         bool
 	}{
 		{`{"value":"好"}`, "stop", false}, {"```json\n{\"value\":\"好\"}\n```", "stop", false},
-		{`{"value":"好"}`, "length", true}, {`{"value":"好"} {}`, "stop", true},
+		{`{"value":"好"}`, "length", true}, {`{"value":"好"} {}`, "stop", false}, {`{"value":`, "stop", true},
 	} {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Header.Get("Authorization") != "Bearer secret" {

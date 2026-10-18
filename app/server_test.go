@@ -308,3 +308,84 @@ func TestAIAnswerPolicyDelivery(t *testing.T) {
 		})
 	}
 }
+
+func TestAcceptRepliesInsteadOfFailingWebhook(t *testing.T) {
+	sender := &testSender{}
+	s, event := setup(t, &testProvider{}, sender, testRenderer{})
+	s.Runtime.Config.MaxUserTasks, s.Runtime.Config.MaxChatTasks = 1, 4
+	if err := s.Accept(context.Background(), event); err != nil || s.Store.Pending() != 1 {
+		t.Fatal("first search not queued", err)
+	}
+	second := event
+	second.ID, second.Target.MessageID = "event2", "message2"
+	s.last = map[string]time.Time{}
+	// Quota is a user-facing answer; a webhook error would trigger redelivery.
+	if err := s.Accept(context.Background(), second); err != nil || s.Store.Pending() != 1 || len(sender.texts) != 1 || !strings.Contains(sender.texts[0], "进行中") {
+		t.Fatalf("quota not answered: %v %q", err, sender.texts)
+	}
+	s.last = map[string]time.Time{}
+	if err := s.Accept(context.Background(), second); err != nil || len(sender.texts) != 1 {
+		t.Fatalf("redelivered quota event replied twice: %v %q", err, sender.texts)
+	}
+	for i, text := range []string{"/search", "/status", "/status 0123456789abcdef0123456789abcdef"} {
+		s.last = map[string]time.Time{}
+		e := event
+		e.ID, e.Text = fmt.Sprint("usage", i), text
+		if err := s.Accept(context.Background(), e); err != nil || len(sender.texts) != 2+i {
+			t.Fatalf("%s not answered: %v %q", text, err, sender.texts)
+		}
+	}
+}
+
+func TestAddressedPlainTextSearches(t *testing.T) {
+	for _, addressed := range []bool{false, true} {
+		s, event := setup(t, &testProvider{}, &testSender{}, testRenderer{})
+		event.Text, event.Addressed = "Go context cancellation", addressed
+		if err := s.Accept(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if addressed {
+			want = 1
+		}
+		if s.Store.Pending() != want {
+			t.Fatalf("addressed=%t queued %d", addressed, s.Store.Pending())
+		}
+	}
+	for _, tt := range []struct {
+		event platform.Event
+		ok    bool
+	}{
+		{platform.Event{Text: "<@!1> SpringData简介", Addressed: true}, true},
+		{platform.Event{Text: "/unknown x", Addressed: true}, false},
+		{platform.Event{Text: "  ", Addressed: true}, false},
+		{platform.Event{Text: "/deep x", Addressed: true}, true},
+	} {
+		if cmd, ok := platform.ParseRequest(tt.event); ok != tt.ok || (ok && cmd.Argument == "") {
+			t.Fatalf("unexpected parse %+v: %+v %t", tt.event, cmd, ok)
+		}
+	}
+}
+
+type panicRenderer struct{}
+
+func (panicRenderer) Render(context.Context, string, research.Output, string) ([]render.Artifact, error) {
+	panic("renderer bug")
+}
+
+func TestTaskPanicFailsOnlyThatTask(t *testing.T) {
+	s, event := setup(t, &testProvider{}, &testSender{}, testRenderer{})
+	s.Runtime.Renderer = panicRenderer{}
+	if err := s.Accept(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok, err := s.Store.Claim()
+	if err != nil || !ok {
+		t.Fatal(err)
+	}
+	s.processSafely(context.Background(), rec)
+	stored, err := s.Store.Get(rec.ID)
+	if err != nil || stored.State != "failed" || stored.Error != "internal error" {
+		t.Fatalf("panic not contained: %+v %v", stored, err)
+	}
+}

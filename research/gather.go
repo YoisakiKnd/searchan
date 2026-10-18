@@ -26,7 +26,15 @@ func newReading(e *Engine, stats *Stats) *reading {
 	return &reading{engine: e, stats: stats, attempted: map[string]bool{}, hashes: map[string]bool{}, urls: map[string]bool{}, published: map[string]string{}}
 }
 func (s *reading) read(ctx context.Context, plan Plan, hits []hit, budget int) []string {
-	selected := rankHits(plan, hits, s.attempted, budget)
+	// Skip sites that recently refused automated reads, unless the provider
+	// already supplied usable text for that hit.
+	readable := make([]hit, 0, len(hits))
+	for _, h := range hits {
+		if !s.engine.hosts.blocked(domain(h.URL)) || usableProviderText(h) {
+			readable = append(readable, h)
+		}
+	}
+	selected := rankHits(plan, readable, s.attempted, budget)
 	type outcome struct {
 		doc              reader.Document
 		err              error
@@ -115,6 +123,7 @@ func (s *reading) read(ctx context.Context, plan Plan, hits []hit, budget int) [
 		s.stats.ReaderCalls += r.direct
 		s.stats.FallbackReads += r.fallback
 		if r.err != nil {
+			s.engine.hosts.observe(domain(selected[i].URL), r.err)
 			trace.State, trace.Issue = "failed", readIssue(r.err)
 			var content reader.ContentError
 			if errors.As(r.err, &content) {
@@ -157,6 +166,10 @@ func (s *reading) read(ctx context.Context, plan Plan, hits []hit, budget int) [
 	return warnings
 }
 
+func usableProviderText(h hit) bool {
+	return utf8.ValidString(h.Content) && utf8.RuneCountInString(h.Content) >= 40 && reader.CheckContent(h.Title, h.Content) == nil
+}
+
 func readIssue(err error) string {
 	var content reader.ContentError
 	if errors.As(err, &content) {
@@ -169,6 +182,17 @@ func readIssue(err error) string {
 		return "cancelled"
 	}
 	return "read_error"
+}
+
+// Two independent pages let the model notice a single source's errors.
+const minEvidencePages = 2
+
+func evidencePages(evidence []Evidence) int {
+	pages := map[string]bool{}
+	for _, ev := range evidence {
+		pages[search.DocumentURL(ev.URL)] = true
+	}
+	return len(pages)
 }
 
 type gathering struct {
@@ -212,9 +236,10 @@ func (g *gathering) gather(ctx context.Context) []hit {
 	out.Warnings = append(out.Warnings, s.search(gatherCtx, out.Plan.Queries, e.cfg.MaxSearchCalls-min(2, e.cfg.MaxSearchCalls-1))...)
 	out.Stats.StageMS["search"] = time.Since(t).Milliseconds()
 	t = time.Now()
-	// Read a small batch first, preserving pages for concrete gaps. If it
-	// contains no usable evidence, exhaust the initial reserve in small batches
-	// before spending another model call.
+	// Read a small batch first, preserving pages for concrete gaps. Many pages
+	// refuse automated reads, so keep reading already found candidates in small
+	// batches until evidence comes from two independent pages or the initial
+	// reserve is spent. This adds no search or model calls.
 	initialPages := e.cfg.MaxPages
 	if initialPages > 2 {
 		initialPages -= min(2, initialPages/3)
@@ -223,7 +248,7 @@ func (g *gathering) gather(ctx context.Context) []hit {
 		before := out.Stats.PagesRead
 		out.Warnings = append(out.Warnings, r.read(gatherCtx, out.Plan, s.hits, min(3, initialPages-before))...)
 		out.Evidence = SelectEvidenceForPlan(out.Plan, r.docs, r.published, e.cfg.MaxEvidence)
-		if len(out.Evidence) > 0 || out.Stats.PagesRead == before {
+		if evidencePages(out.Evidence) >= minEvidencePages || out.Stats.PagesRead == before {
 			break
 		}
 	}
@@ -294,7 +319,7 @@ func (g *gathering) gather(ctx context.Context) []hit {
 		// must not make us throw them away when the gathering deadline expires.
 		var provided []hit
 		for _, h := range s.hits {
-			if utf8.ValidString(h.Content) && utf8.RuneCountInString(h.Content) >= 40 && reader.CheckContent(h.Title, h.Content) == nil {
+			if usableProviderText(h) {
 				provided = append(provided, h)
 			}
 		}

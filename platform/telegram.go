@@ -110,7 +110,10 @@ func (t *Telegram) DecodeWebhook(r *http.Request) (Event, error) {
 				ID    int64
 				IsBot bool `json:"is_bot"`
 			}
-			Chat struct{ ID int64 }
+			Chat struct {
+				ID   int64
+				Type string
+			}
 		} `json:"message"`
 	}
 	if err := httpx.Decode(r.Body, 64<<10, &update); err != nil {
@@ -128,5 +131,5 @@ func (t *Telegram) DecodeWebhook(r *http.Request) (Event, error) {
 			return Event{}, nil
 		}
 	}
-	return Event{ID: fmt.Sprintf("telegram:%d", update.UpdateID), Text: m.Text, Target: Target{Platform: "telegram", ChatID: strconv.FormatInt(m.Chat.ID, 10), UserID: strconv.FormatInt(m.From.ID, 10), MessageID: strconv.FormatInt(m.MessageID, 10), ThreadID: m.ThreadID}}, nil
+	return Event{ID: fmt.Sprintf("telegram:%d", update.UpdateID), Text: m.Text, Addressed: m.Chat.Type == "private", Target: Target{Platform: "telegram", ChatID: strconv.FormatInt(m.Chat.ID, 10), UserID: strconv.FormatInt(m.From.ID, 10), MessageID: strconv.FormatInt(m.MessageID, 10), ThreadID: m.ThreadID}}, nil
 }

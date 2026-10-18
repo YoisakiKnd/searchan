@@ -33,6 +33,7 @@ type Config struct {
 type Engine struct {
 	cfg                    Config
 	searchSlots, readSlots chan struct{}
+	hosts                  *hostHealth
 }
 
 func (e *Engine) HasModel() bool { return e.cfg.Model != nil }
@@ -80,7 +81,7 @@ func New(cfg Config) (*Engine, error) {
 		}
 		names[p.Name()] = true
 	}
-	return &Engine{cfg: cfg, searchSlots: make(chan struct{}, cfg.SearchConcurrency), readSlots: make(chan struct{}, cfg.ReadConcurrency)}, nil
+	return &Engine{cfg: cfg, searchSlots: make(chan struct{}, cfg.SearchConcurrency), readSlots: make(chan struct{}, cfg.ReadConcurrency), hosts: newHostHealth()}, nil
 }
 
 const plannerPrompt = `你负责制定网页搜索计划。输入中的 query 是用户问题。只输出 JSON {"intent":"fact|compare|howto|recent|verify|navigate","queries":["具体查询"],"aspects":["必须回答的方面"]}。
@@ -94,7 +95,7 @@ const answerPrompt = answerEvidenceRules + `
 输出 JSON：
 {"answers_query":true,"title":"简短标题","lead":{"text":"直接回答","evidence_ids":["e1"]},"sections":[{"heading":"要点","claims":[{"text":"一个具体结论","evidence_ids":["e1"]}]}],"uncertainties":["确实无法确认的部分"]}。
 可选 table: {"columns":["项目","特点"],"rows":[{"cells":["A","特点"],"evidence_ids":["e1"]}]}，最多4列8行。
-标题最多50个字，最多6节每节6条。按问题需要决定长度；简介通常150–350个中文字、2–3个要点即可，不为凑字数添加资料目录或无关对比。只有用户确实需要比较时才使用 table。
+标题最多50个字。全部 sections 合计最多6条结论，只保留回答问题最重要的内容；是非题、单一事实题通常2–4条，lead 已说过的内容不要在 sections 中重复。简介通常150–350个中文字、2–3个要点即可，不为凑字数添加资料目录、无关对比、配置示例或延伸话题。只有用户确实需要比较时才使用 table。
 lead 必须优先回答用户所问的实体。无法回答核心问题时 answers_query=false，并增加 missing 数组，最多4条、每条描述一个可以通过检索核实的具体事实缺口；最多一个简短段落说明缺口，sections=[]，不输出 table，不能把无关项目或“资料未涉及”扩写成报告。`
 
 func (e *Engine) Run(ctx context.Context, query string) (Output, error) {
@@ -107,8 +108,8 @@ func (e *Engine) Run(ctx context.Context, query string) (Output, error) {
 		return out, ErrModelRequired
 	}
 	out.Plan = Plan{Intent: inferIntent(out.Query), Queries: []string{out.Query}, Aspects: []string{out.Query}, RequiresFresh: requiresFreshQuery(out.Query)}
-	if canonical := spacedQuery(out.Query); queryKey(canonical) != queryKey(out.Query) {
-		out.Plan.Queries = append(out.Plan.Queries, canonical)
+	if variant := searchVariant(out.Query); variant != "" && queryKey(variant) != queryKey(out.Query) {
+		out.Plan.Queries = append(out.Plan.Queries, variant)
 	}
 	t := time.Now()
 	if e.cfg.PlanWithModel && e.cfg.Model != nil {
