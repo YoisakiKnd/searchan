@@ -60,12 +60,13 @@ func TestCoveragePoolRetainsNumberedRFCLinks(t *testing.T) {
 	doc.Links = []reader.Link{
 		{URL: "https://standards.example/rfc1234", Text: "RFC 1234"},
 		{URL: "https://standards.example/rfc5678", Text: "rfc-5678"},
-		{URL: "http://127.0.0.1/rfc9999", Text: "RFC 9999"},
+		{URL: "https://standards.example/rfc9876", Text: "RFC 9876 — Atlas Message Envelope"},
+		{URL: "http://127.0.0.1/rfc9999", Text: "RFC 9999 — Internal Service"},
 		{URL: "https://ads.example/sale", Text: "RFC sale"},
 	}
 	g.reading.docs = []reader.Document{doc}
 	pool := g.coverageCandidates()
-	if len(pool) != 2 || pool[0].URL != doc.Links[0].URL || pool[1].URL != doc.Links[1].URL || pool[0].Origin != "document_link" {
+	if len(pool) != 3 || pool[0].URL != doc.Links[0].URL || pool[1].URL != doc.Links[1].URL || pool[2].URL != doc.Links[2].URL || pool[2].ReferenceLabel != doc.Links[2].Text || pool[0].Origin != "document_link" {
 		t.Fatal("numbered reference anchors lost or unsafe link admitted", pool)
 	}
 	if out.Stats.PagesRead != 0 || len(out.Evidence) != 0 {
@@ -74,12 +75,12 @@ func TestCoveragePoolRetainsNumberedRFCLinks(t *testing.T) {
 }
 
 func TestNumberedRFCReferenceLabelsAreStrict(t *testing.T) {
-	for _, label := range []string{"RFC 1234", "rfc-1234", "RFC1234", "  RFC\t1234  "} {
+	for _, label := range []string{"RFC 1234", "rfc-1234", "RFC1234", "  RFC\t1234  ", "RFC 7519 — JSON Web Token", "RFC7519: JSON Web Token", "RFC7519–JSON Web Token", "RFC-7519 - JSON Web Token", "RFC 7519：JSON Web Token", "RFC 1234\nAtlas Envelope"} {
 		if !referenceLabel(label) {
 			t.Fatal("numbered RFC anchor rejected", label)
 		}
 	}
-	for _, label := range []string{"RFC", "RFC sale", "RFC -1", "RFC 12x4", "RFC 1234567", "Some RFC 1234 sale", "https://example.org/rfc1234"} {
+	for _, label := range []string{"RFC", "RFC sale", "RFC -1", "RFC 12x4", "RFC 1234567", "Some RFC 1234 sale", "https://example.org/rfc1234", "RFC7519x", "RFC7519.2", "RFC1234567 — Atlas", "RFCAdapter1234", "RFC ７５１９"} {
 		if referenceLabel(label) {
 			t.Fatal("non-reference anchor accepted", label)
 		}

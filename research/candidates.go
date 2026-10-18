@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"searchan/reader"
 	"searchan/search"
@@ -134,12 +136,18 @@ func referenceLabel(label string) bool {
 	// or asserting anything about the publisher or the document's authority.
 	if strings.HasPrefix(label, "rfc") {
 		number := strings.TrimSpace(strings.TrimPrefix(label[3:], "-"))
-		if len(number) > 0 && len(number) <= 6 {
-			digits := true
-			for i := range number {
-				digits = digits && number[i] >= '0' && number[i] <= '9'
+		digits := 0
+		for digits < len(number) && digits < 7 && number[digits] >= '0' && number[digits] <= '9' {
+			digits++
+		}
+		if digits > 0 && digits <= 6 {
+			if digits == len(number) {
+				return true
 			}
-			if digits {
+			// A visible identifier may be followed by its title. Require a
+			// separator, so RFC7519x and RFC7519.2 are not numbered RFC labels.
+			next, _ := utf8.DecodeRuneInString(number[digits:])
+			if unicode.IsSpace(next) || strings.ContainsRune(":：-–—", next) {
 				return true
 			}
 		}
